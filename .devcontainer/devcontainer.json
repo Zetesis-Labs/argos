@@ -1,0 +1,39 @@
+{
+  "name": "Argos",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": false,
+  "forwardPorts": [7777, 4100, 3200, 8100, 8200],
+  "portsAttributes": {
+    "7777": { "label": "AgentOS", "onAutoForward": "notify" },
+    "4100": { "label": "LiteLLM", "onAutoForward": "silent" },
+    "3200": { "label": "Langfuse", "onAutoForward": "silent" },
+    "8100": { "label": "SurrealDB", "onAutoForward": "silent" },
+    "8200": { "label": "Surrealist", "onAutoForward": "silent" }
+  },
+  "postCreateCommand": "uv sync && uv run bootstrap-db",
+  "postStartCommand": "uv run bootstrap-db",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "charliermarsh.ruff",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "tamasfe.even-better-toml",
+        "redhat.vscode-yaml",
+        "surrealdb.surrealql"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "python.terminal.activateEnvironment": false,
+        "editor.formatOnSave": true,
+        "[python]": { "editor.defaultFormatter": "charliermarsh.ruff" }
+      }
+    }
+  },
+  "containerEnv": {
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
+  }
+}

@@ -1,0 +1,66 @@
+[project]
+name = "argos"
+version = "0.1.0"
+description = "Entorno local para diseñar agentes de análisis de fraude con Agno y SurrealDB"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "agno[mcp,openai,os,surrealdb]>=3.0,<3.1",
+    "httpx>=0.28,<0.29",
+    "openinference-instrumentation-agno>=1.0,<1.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.44,<1.45",
+    "opentelemetry-sdk>=1.44,<1.45",
+    "structlog>=26.1,<26.2",
+    "surrealdb>=2.0,<2.1",
+]
+
+[project.scripts]
+bootstrap-db = "argos.devtools.bootstrap_db:main"
+spec-check = "argos.devtools.spec_check:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["argos"]
+
+[dependency-groups]
+dev = [
+    "anyio>=4.14,<4.15",
+    "mypy>=1.18,<1.19",
+    "pyright>=1.1,<1.2",
+    "pytest>=9.1,<9.2",
+    "ruff>=0.16,<0.17",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "A", "ANN", "C4", "S", "SIM", "RUF"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106", "S608"]
+
+[tool.pyright]
+include = ["argos", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+venvPath = "."
+venv = ".venv"
+
+[tool.mypy]
+files = ["argos", "tests"]
+python_version = "3.12"
+strict = true
+disallow_any_explicit = true

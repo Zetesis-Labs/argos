@@ -1,0 +1,246 @@
+name: argos
+
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: postgresql://argos:argos@postgres:5432/langfuse
+  SALT: ${LANGFUSE_SALT:-argos-dev-salt-change-me}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: clickhouse
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:${MINIO_PORT:-9290}
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: argosredis
+  NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3200}
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sleep infinity
+    volumes:
+      - ..:/workspace:cached
+      - app_venv:/workspace/.venv
+      - claude_memory:/root/.claude
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      SURREAL_URL: http://surrealdb:8000
+      SURREAL_ROOT_USER: root
+      SURREAL_ROOT_PASSWORD: ${SURREAL_ROOT_PASSWORD:-root}
+      SURREAL_AGENT_PASSWORD: ${SURREAL_AGENT_PASSWORD:-agent-dev-password}
+      SURREAL_RUNTIME_PASSWORD: ${SURREAL_RUNTIME_PASSWORD:-runtime-dev-password}
+      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-argos-master-key}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-11111111-1111-4111-8111-111111111111}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-22222222-2222-4222-8222-222222222222}
+      LANGFUSE_PUBLIC_URL: http://localhost:${LANGFUSE_PORT:-3200}
+    ports:
+      - "127.0.0.1:${AGENTOS_PORT:-7777}:7777"
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+      langfuse-web:
+        condition: service_started
+
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2
+    restart: unless-stopped
+    user: root
+    command:
+      - start
+      - --user
+      - root
+      - --pass
+      - ${SURREAL_ROOT_PASSWORD:-root}
+      - --bind
+      - 0.0.0.0:8000
+      - --log
+      - info
+      - rocksdb:/data/argos.db
+    environment:
+      # El MCP embebido rechaza con 403 cualquier Host que no sea loopback y no
+      # esté en esta lista; el hostname del compose es `surrealdb`.
+      SURREAL_MCP_ALLOWED_HOSTS: surrealdb:8000,localhost:${SURREAL_PORT:-8100}
+    ports:
+      - "127.0.0.1:${SURREAL_PORT:-8100}:8000"
+    volumes:
+      - surreal_data:/data
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "http://localhost:8000"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  surrealist:
+    image: surrealdb/surrealist:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SURREALIST_PORT:-8200}:8080"
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: argos
+      POSTGRES_PASSWORD: argos
+      POSTGRES_DB: langfuse
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argos -d langfuse"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      --requirepass argosredis
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "argosredis", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 20
+
+  minio:
+    image: cgr.dev/chainguard/minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9290}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9291}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4
+    restart: unless-stopped
+    depends_on: &langfuse-deps
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-env
+
+  langfuse-web:
+    image: langfuse/langfuse:4
+    restart: unless-stopped
+    depends_on: *langfuse-deps
+    ports:
+      - "127.0.0.1:${LANGFUSE_PORT:-3200}:3000"
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-argos-dev-nextauth-secret-change-me}
+      LANGFUSE_INIT_ORG_ID: argos
+      LANGFUSE_INIT_ORG_NAME: Argos
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_PROJECT_ID:-argos}
+      LANGFUSE_INIT_PROJECT_NAME: Argos
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-11111111-1111-4111-8111-111111111111}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-22222222-2222-4222-8222-222222222222}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_USER_EMAIL:-argos@example.com}
+      LANGFUSE_INIT_USER_NAME: Argos
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_USER_PASSWORD:-argospassword}
+
+  litellm:
+    image: ghcr.io/berriai/litellm-database:v1.99.1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4100}:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    environment:
+      DATABASE_URL: postgresql://argos:argos@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-argos-master-key}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-argos-salt-key-do-not-rotate}
+      STORE_MODEL_IN_DB: "True"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:4000/health/liveliness")
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  app_venv:
+  claude_memory:
+  surreal_data:
+  postgres_data:
+  clickhouse_data:
+  clickhouse_logs:
+  redis_data:
+  minio_data:
