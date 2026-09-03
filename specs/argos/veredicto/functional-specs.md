@@ -2,7 +2,7 @@
 
 **App**: `argos` · **Iniciativa**: `veredicto` (v1)
 
-Los flujos llevan identificador `W1`…`W5` y las reglas `R1`…`R28`. Las specs
+Los flujos llevan identificador `W1`…`W5` y las reglas `R1`…`R29`. Las specs
 técnicas `Sxx` los citan. Esta especificación describe el comportamiento; la
 topología de AgentOS, NATS, RustFS y SurrealDB se fija en la vertical técnica.
 
@@ -32,7 +32,7 @@ la interpretación jurídica de contratos.
 |---|---|---|
 | **Consultante** | Persona con un aviso sospechoso. Anónima para Argos y representada por un cliente autorizado. | Enviar un aviso o documento, leer el veredicto y preguntar sobre él |
 | **Cliente de servicio** | Aplicación o AgentOS remoto con identidad de servicio y tenant asignado. | Invocar capacidades públicas, consultar sus casos y trabajos, recibir referencias de resultados |
-| **Curador** | Quien opera Argos. Autenticado. | Revisar casos, reintentar trabajos, marcar confirmados y falsos positivos, supervisar ingestas y explorar la memoria |
+| **Curador** | Quien opera el despliegue de Argos, con visión de todos los tenants. Autenticado y auditado. | Revisar casos, reintentar trabajos, marcar confirmados y falsos positivos, supervisar ingestas y explorar la memoria |
 | **Workflow de veredicto** | Coordinador del caso. | Validar el proceso, llamar a especialistas, esperar trabajos, puntuar y cerrar el caso |
 | **Agentes especialistas** | Triaje, registros, dominio, patrones, memoria, documentos, redacción y conversación. | Ejecutar únicamente su cometido con herramientas y permisos acotados |
 | **Worker de documentos** | Proceso no conversacional que transforma documentos. | Extraer texto y metadatos, ejecutar OCR cuando corresponda y guardar el resultado del trabajo |
@@ -83,8 +83,8 @@ la interpretación jurídica de contratos.
 
 | Punto | Actor | Dirección | Contenido y resultado |
 |---|---|---|---|
-| **Analizar aviso** (API/A2A) | Cliente de servicio | entra/sale | Texto, hasta tres enlaces y una imagen opcional; devuelve caso y veredicto |
-| **Enviar documento** (API/A2A) | Cliente de servicio, Curador | entra/sale | PDF asociado a un caso nuevo o existente; devuelve caso, documento, trabajo y estado aceptado |
+| **Analizar aviso** (API/A2A) | Cliente de servicio | entra/sale | Texto, hasta tres enlaces y una imagen opcional; devuelve caso y veredicto. El análisis es un trabajo durable: si el proceso que atendía la llamada muere, el caso termina igual y se recupera con «Consultar caso» |
+| **Enviar documento** (API/A2A) | Cliente de servicio, Curador | entra/sale | PDF asociado a un caso nuevo o a uno existente sin veredicto; devuelve caso, documento, trabajo (nuevo o ya existente) y estado aceptado |
 | **Consultar trabajo** (API/A2A) | Cliente de servicio, Curador | sale | Estado, intento, progreso disponible, error público y referencias al resultado |
 | **Consultar caso** (API/A2A) | Cliente de servicio, Curador | sale | Estado actual y, cuando existe, veredicto completo |
 | **Conversar** (API/interfaz del operador) | Cliente de servicio, Curador | entra/sale | Preguntas sobre el veredicto dentro de una sesión del caso |
@@ -108,10 +108,13 @@ posteriores.
 1. Se autentica al cliente y se fija el tenant antes de leer o crear datos.
 2. Se validan los límites de R1. Si falla, se rechaza con el motivo y no se crea
    caso.
-3. Se crea el caso en `received` con el hash del aviso. Si R9 encuentra un caso
-   equivalente, se devuelve aquel resultado sin repetir el análisis.
-4. Triaje extrae y normaliza identificadores, transcribe la imagen, detecta el
-   idioma y propone tipologías. El caso pasa a `analyzing`.
+3. Se crea el caso en `received` con el hash del aviso y, en la misma operación
+   durable, el trabajo de análisis que lo llevará a un estado terminal (R12).
+   Si R9 encuentra un caso equivalente, se devuelve aquel caso, terminado o en
+   curso, sin repetir el análisis.
+4. El trabajo de análisis arranca y el caso pasa a `analyzing`. Triaje extrae y
+   normaliza identificadores, transcribe la imagen, detecta el idioma y propone
+   tipologías.
 5. El workflow solicita en paralelo cuatro análisis, cada uno limitado a su
    cometido:
    - **Registros**: coincidencias con advertencias oficiales, incluidos clones.
@@ -140,6 +143,9 @@ posteriores.
   obtenido y se indica qué faltó.
 - Ante fallo interno, termina en `failed`; el cliente recibe un error estable sin
   detalles técnicos y el curador conserva la correlación para investigarlo.
+- Si el proceso que atendía la llamada se reinicia a mitad, el trabajo de
+  análisis se reentrega y el caso termina igualmente; el cliente lo recupera
+  con «Consultar caso» (R25).
 
 ### W2 · Conversar sobre un veredicto
 
@@ -199,22 +205,31 @@ nuevo.
 
 **Inicio**: un cliente autorizado envía un PDF para un caso nuevo o existente.
 
-1. Se valida autorización, formato, tamaño y límites de R19 antes de aceptar.
+1. Se valida autorización, tenant y la parte barata de R19 (extensión, tipo
+   declarado, firma real y tamaño) antes de aceptar. Un caso existente solo
+   admite documentos mientras no tenga veredicto; si ya lo tiene, se crea un
+   caso nuevo vinculado al anterior (R12).
 2. El original se registra como documento del tenant y del caso, se calcula su
    hash y se guarda como artefacto privado. El caso pasa a
-   `awaiting_processing` si aún no dispone de entrada analizable.
+   `awaiting_processing`: un caso con documentos pendientes no se analiza hasta
+   que todos terminen (R15).
 3. En la misma operación durable se crean el trabajo `queued` y la orden
-   pendiente de publicación. La respuesta inmediata contiene `case_id`,
-   `document_id`, `job_id` y la forma de consultar el estado.
+   pendiente de publicación. Si el mismo caso ya tenía un documento con ese
+   hash, se devuelven el documento y el trabajo existentes sin crear nada
+   (R22). La respuesta inmediata contiene `case_id`, `document_id`, `job_id` y
+   la forma de consultar el estado.
 4. El worker reclama el trabajo, verifica que sigue autorizado y pasa a
-   `running`. Extrae texto por página y metadatos; aplica OCR únicamente a las
-   páginas sin texto utilizable.
+   `running`. Completa la validación profunda de R19 (cifrado, contenido
+   activo, páginas); incumplirla es un fallo permanente con código estable.
+   Extrae texto por página y metadatos; aplica OCR únicamente a las páginas sin
+   texto utilizable.
 5. Guarda la extracción completa como artefacto privado y produce chunks con
    página y posición. En la misma confirmación marca `completed` y deja pendiente
    la notificación referenciada; su publicación puede recuperarse tras un fallo.
-6. El workflow recupera los chunks autorizados, ejecuta W1 desde el triaje y
-   guarda las señales con citas y páginas. El tiempo de R15 empieza cuando la
-   extracción está disponible.
+6. Cuando termina el último documento pendiente del caso se crea su trabajo de
+   análisis (R12), que recupera los chunks autorizados, ejecuta W1 desde el
+   triaje y guarda las señales con citas y páginas. El tiempo de R15 empieza
+   entonces.
 7. La sesión que originó el trabajo puede desaparecer: el caso se reanuda desde
    su estado durable y el resultado se consulta por identificador.
 
@@ -223,14 +238,24 @@ el trabajo queda en un estado terminal explicable.
 
 **Caminos alternativos**
 
-- Un PDF cifrado, corrupto o que excede límites se rechaza con un código estable.
+- Un PDF que no supera la validación barata se rechaza antes de encolar. Uno
+  cifrado, corrupto, con contenido activo o que excede páginas termina como
+  fallo permanente del trabajo, con código estable y sin reintentos. En ambos
+  casos el documento queda `rejected`.
 - Una entrega duplicada del mismo intento no duplica la extracción.
-- Un fallo transitorio reintenta con backoff; cada intento queda registrado.
-- Agotado el presupuesto, termina `failed`; el caso no finge un veredicto y el
-  curador puede reprocesar.
+- Un fallo transitorio reintenta con backoff; cada intento queda registrado. Un
+  worker que muere a mitad deja un intento perdido que se reencola por sí solo
+  (R21).
+- Agotado el presupuesto, el trabajo termina `failed`. Si el caso no tiene
+  ninguna otra entrada analizable termina `failed`; si la tiene, se analiza y el
+  veredicto es `partial` e indica que el documento no se procesó. El caso no
+  finge un veredicto y el curador puede reprocesar.
+- Reprocesar un caso `failed` o `partial` lo devuelve a `awaiting_processing`
+  con un trabajo nuevo; el veredicto anterior se conserva como versión superada
+  (R12, R22).
 - Reprocesar con otro extractor crea una extracción nueva y conserva la anterior.
-- Si el caso también contenía texto o enlaces analizables, puede emitir un
-  veredicto `partial` que indique que el documento no se procesó.
+- Enviar un documento a un caso que ya tiene veredicto crea un caso nuevo
+  vinculado al anterior; no modifica el veredicto emitido.
 
 ## 6. Reglas y restricciones funcionales
 
@@ -254,22 +279,32 @@ el trabajo queda en un estado terminal explicable.
   - una señal fuerte o tres débiles dan al menos `medium`;
   - `low` exige que todos los análisis aplicables respondan y ninguno produzca
     señal fuerte.
-  Los pesos concretos se calibran técnicamente; estas garantías no se rebajan.
+  Además existe `undetermined`, que no es un nivel de riesgo sino la
+  declaración de que no se pudo evaluar: se reserva para un veredicto `partial`
+  sin ninguna señal. Los pesos concretos se calibran técnicamente; estas
+  garantías no se rebajan.
 - **R5 · Degradación explícita.** Si un análisis aplicable no termina, el
-  veredicto es `partial`, dice qué faltó y nunca puede ser `low`.
+  veredicto es `partial`, dice qué faltó y nunca puede ser `low`. Un documento
+  cuya extracción falló cuenta como análisis que no terminó. Un `partial` sin
+  ninguna señal lleva nivel `undetermined`.
 - **R6 · Lenguaje de indicios.** Se habla de indicios, señales y coincidencias.
   Nunca se imputa un delito ni se señala a una persona física como estafadora.
 - **R7 · Acciones siempre.** Todo veredicto termina con acciones ordenadas por
   urgencia y dónde acudir. En `high` y `critical`: no enviar dinero ni datos,
   cortar contacto, avisar al banco si hubo pago, denunciar y comunicar a CNMV.
+  En `undetermined`: no enviar dinero ni datos y repetir la consulta más tarde.
 - **R8 · Privacidad.** El aviso breve no se persiste íntegro. Se guardan hash,
   idioma, estado, nivel, tipologías, identificadores, vínculos y la mínima cita
   que sostiene cada señal. Un PDF y su extracción completa son artefactos
   privados con caducidad; nunca se copian a conversaciones, eventos ni trazas.
-  Los nombres de personas físicas no se persisten como entidades.
+  Los fragmentos que un agente consulta no se guardan en su sesión, solo sus
+  referencias; las trazas registran metadatos de las llamadas a modelos, no sus
+  mensajes. Los nombres de personas físicas no se persisten como entidades.
 - **R9 · Deduplicación.** Dos avisos con el mismo hash dentro de 24 horas y el
-  mismo tenant comparten resultado. El hash cubre texto normalizado, enlaces e
-  imagen. No existe deduplicación observable entre tenants.
+  mismo tenant comparten caso: el segundo recibe el caso del primero, terminado
+  o en curso, salvo que aquel terminara en `failed`, y entonces se analiza de
+  nuevo. El hash cubre texto normalizado, enlaces e imagen. No existe
+  deduplicación observable entre tenants.
 - **R10 · Vínculos.** Dos entidades se vinculan como «mismo actor» solo si
   comparten un identificador fuerte. Solo compartir empresa no basta. Un caso
   `false_positive` no crea reincidencia.
@@ -277,9 +312,13 @@ el trabajo queda en un estado terminal explicable.
   captura. Sin captura no participa. Una retirada se conserva como histórica
   pero no produce coincidencia vigente.
 - **R12 · Estados del caso.** `received` pasa a `awaiting_processing` cuando
-  depende de un documento y después a `analyzing`; o pasa directamente a
-  `analyzing`. Los terminales son `verdict_issued`, `partial`, `insufficient` y
-  `failed`. Un reanálisis crea un caso vinculado; un reintento de extracción no.
+  tiene documentos pendientes y a `analyzing` cuando arranca su trabajo de
+  análisis. Todo caso pasa por `analyzing` mediante un trabajo durable, también
+  el de un aviso breve. Los terminales son `verdict_issued`, `partial`,
+  `insufficient` y `failed`. Solo el curador saca a un caso de un terminal:
+  reprocesar devuelve `failed` o `partial` a `awaiting_processing` y conserva el
+  veredicto anterior como versión superada. Un documento enviado a un caso con
+  veredicto crea un caso vinculado; un reintento de extracción no.
 - **R13 · Estados de revisión.** `unreviewed` pasa a `confirmed`,
   `false_positive` o `inconclusive`. El curador puede cambiar la marca y se
   conserva autor y fecha de cada cambio.
@@ -288,9 +327,10 @@ el trabajo queda en un estado terminal explicable.
 - **R15 · Tiempo.** W1 tarda como máximo 60 segundos desde que toda entrada
   necesaria es analizable. W5 es asíncrono y no consume ese presupuesto.
 - **R16 · Acceso y tenant.** Toda operación exige identidad de servicio o de
-  curador. La identidad determina tenant antes de aceptar identificadores. Solo
-  el mismo tenant puede consultar caso, trabajo o extracción. Revisar, explorar,
-  ingerir y reprocesar exigen rol de curador.
+  curador. La identidad de servicio determina el tenant antes de aceptar
+  identificadores, y solo ese tenant consulta sus casos, trabajos y
+  extracciones. El curador opera todos los tenants: revisar, explorar, ingerir
+  y reprocesar exigen su rol y cada acción queda atribuida y fechada.
 - **R17 · Escrituras acotadas.** W1 escribe caso, entidades, señales y veredicto;
   W3 escribe advertencias e ingestas; W5 escribe documentos, trabajos,
   extracciones y chunks; W4 escribe revisiones. W2 solo lee y escribe su sesión.
@@ -298,19 +338,26 @@ el trabajo queda en un estado terminal explicable.
   originales, extracciones completas y chunks duran 30 días por defecto;
   advertencias oficiales e ingestas se conservan sin límite. El borrado elimina
   también artefactos sin referencias vivas.
-- **R19 · Documento admitido.** En v1 solo PDF, máximo 25 MB y 500 páginas. Se
-  valida extensión, tipo declarado y firma real. PDF cifrado, corrupto o con
-  contenido activo no admitido se rechaza antes de encolar.
+- **R19 · Documento admitido.** En v1 solo PDF, máximo 25 MB y 500 páginas.
+  Antes de encolar se valida extensión, tipo declarado, firma real y tamaño.
+  Cifrado, corrupción, contenido activo no admitido y exceso de páginas los
+  detecta el worker: son fallos permanentes con código estable y sin
+  reintentos, y dejan el documento `rejected`.
 - **R20 · Aceptación asíncrona.** Enviar un documento devuelve aceptación y los
   identificadores de caso, documento y trabajo; no espera a la extracción ni
   promete un veredicto inmediato.
 - **R21 · Estados del trabajo.** `queued` → `running` → `completed` o `failed`.
-  Un intento perdido vuelve a `queued` mientras quede presupuesto. Cada intento
-  tiene inicio, fin y error categorizado; solo el curador ve detalle técnico.
-- **R22 · Idempotencia.** La clave funcional es tenant + hash de contenido +
-  versión de extractor + opciones. Repetir el mismo intento devuelve el mismo
+  Cada intento tiene inicio, fin, arrendamiento y error categorizado. Un intento
+  que agota su arrendamiento sin cerrarse se considera perdido: el trabajo
+  vuelve a `queued` con un intento nuevo mientras quede presupuesto y, si no,
+  termina `failed`. Solo el curador ve detalle técnico.
+- **R22 · Idempotencia.** Un documento se identifica dentro de su caso por el
+  hash del contenido: enviar el mismo PDF al mismo caso devuelve el documento y
+  el trabajo existentes. Una extracción se identifica por documento, versión de
+  extractor y opciones normalizadas; repetir el mismo intento devuelve el mismo
   resultado. Reprocesar cambia la versión o crea una orden explícita y conserva
-  historia.
+  historia. El mismo PDF en casos distintos son documentos y extracciones
+  distintos, cada uno con su caducidad.
 - **R23 · Propiedad.** Documento y extracción pertenecen al tenant y al caso, no
   al agente ni al worker. Una sesión conserva referencias, nunca la única copia.
 - **R24 · Resultado referenciado.** Una notificación contiene identificadores y
@@ -329,6 +376,11 @@ el trabajo queda en un estado terminal explicable.
 - **R28 · Errores visibles y operables.** Todo fallo termina en un estado, código
   público y correlación. Los errores no se convierten en respuestas vacías ni se
   pierden después de agotar reintentos.
+- **R29 · Memoria compartida.** Las entidades y sus vínculos son globales: un
+  mismo identificador es un solo nodo aunque lo citen casos de tenants
+  distintos. Un tenant recibe de la memoria solo agregados: en cuántos casos y
+  desde cuándo se vio la entidad y si alguno está `confirmed`; nunca
+  identificadores, citas ni tenant de casos ajenos. El curador ve el detalle.
 
 ## 7. Conceptos de datos
 
@@ -338,16 +390,16 @@ el trabajo queda en un estado terminal explicable.
 | **Aviso** | Entrada breve del consultante | texto, enlaces, imagen, idioma detectado | no se persiste íntegro |
 | **Caso** | Unidad de investigación | tenant, hash, fecha, idioma, nivel, parcial, tipologías, revisión, correlación, caso anterior | R12, R13 |
 | **Documento** | PDF asociado a un caso | tenant, caso, hash, MIME, tamaño, páginas, referencia privada, caducidad | accepted, rejected, expired |
-| **Trabajo** | Encargo durable de procesamiento | tipo, tenant, caso, documento, intento actual, versión, fechas, error público | R21 |
-| **Intento** | Una ejecución de un trabajo | número, worker, inicio, fin, error categorizado | running, succeeded, failed |
+| **Trabajo** | Encargo durable de procesamiento | tipo (`document.extract`, `case.analyze`, `source.ingest`), tenant, caso, documento, intento actual, presupuesto de intentos, arrendamiento, versión, fechas, error público | R21 |
+| **Intento** | Una ejecución de un trabajo | número, consumidor, inicio, fin, arrendamiento, error categorizado | running, succeeded, failed, lost |
 | **Extracción** | Resultado versionado de un documento | documento, extractor, versión, hash, páginas, referencia privada, calidad, fecha | available, superseded, expired |
 | **Chunk** | Fragmento recuperable con contexto | extracción, página, posición, texto, hash, caducidad | available, expired |
-| **Entidad** | Identificador del presunto actor | tipo, valor normalizado, primera y última aparición, número de casos | — |
+| **Entidad** | Identificador del presunto actor, compartido entre tenants | tipo, valor normalizado, primera y última aparición, número de casos, casos confirmados | R29 |
 | **Señal** | Indicio sobre un caso | tipo, fuerza, análisis, fuente, fecha, valor, evidencia, página, entidad | — |
 | **Advertencia oficial** | Entrada de un regulador | regulador, entidad, identificadores, tipo, clon, fechas, URL | vigente, retirada |
 | **Tipología** | Familia de fraude | nombre, descripción, patrones, acciones | — |
 | **Patrón** | Técnica de manipulación | nombre, fuerza, ejemplos | — |
-| **Veredicto** | Salida explicada del caso | nivel, parcial, resumen, señales, entidades, reincidencia, acciones, fuentes ausentes | — |
+| **Veredicto** | Salida explicada del caso | versión, nivel, parcial, resumen, señales, entidades, reincidencia, acciones, fuentes ausentes | vigente, superado |
 | **Vínculo** | Relación del grafo | tipo, origen, destino, caso, fecha | — |
 | **Revisión** | Juicio del curador | marca, nota, autor, fecha | R13 |
 | **Ejecución de ingesta** | Pasada sobre una fuente | fuente, fechas, recuentos, error | ok, error, rechazada |
@@ -395,10 +447,19 @@ aceptado → en cola → procesando → extracción disponible → analizando �
   tenant, nunca hacia arriba sin una nueva decisión.
 - **A7** · Las imágenes breves usan visión por la pasarela; el PDF usa extracción
   determinista y OCR de respaldo en el worker.
-- **A8** · El primer worker de documentos puede implementarse en Go, pero su
-  comportamiento está definido por W5 y no por el lenguaje.
+- **A8** · El worker de documentos se implementa en Python dentro del
+  repositorio, con los mismos puertos, fakes y anclaje de specs que el resto.
+  Su comportamiento lo fija W5; extraerlo a otro lenguaje exigiría definir
+  antes cómo se ancla a la spec.
 - **A9** · La consulta de trabajo es el mecanismo obligatorio; una notificación
   push posterior es una comodidad y no la fuente de verdad.
+- **A10** · La memoria de entidades es compartida entre tenants y se expone a
+  cada tenant solo como agregados (R29). Decidido el 2026-09-03.
+- **A11** · El curador es global al despliegue, no por tenant (R16).
+- **A12** · Todo análisis de caso es un trabajo durable, también el de un
+  aviso breve; la llamada síncrona espera su resultado (R12, R25).
+- **A13** · `undetermined` existe para no fingir un nivel cuando un parcial no
+  reunió ninguna señal (R4, R5).
 
 **Preguntas abiertas no bloqueantes para iniciar la plataforma**
 

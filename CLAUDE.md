@@ -45,7 +45,7 @@ RustFS para artefactos.
 | Ruta | Qué |
 |---|---|
 | `specs/constitution.md` | Invariantes de producto, datos y arquitectura |
-| `specs/argos/veredicto/functional-specs.md` | W1–W5 y R1–R28 |
+| `specs/argos/veredicto/functional-specs.md` | W1–W5 y R1–R29 |
 | `specs/S01-plataforma.md` | Base implementada y casos anclados |
 | `specs/S02-agentos-workers.md` | Arquitectura aprobada del clúster, NATS, RustFS y PDFs |
 | `db/schema.surql` | Esquema SurrealDB idempotente; lo aplica `bootstrap-db` |
