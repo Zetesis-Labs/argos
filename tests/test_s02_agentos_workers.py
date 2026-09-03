@@ -6,10 +6,11 @@ import hashlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from argos.config import Settings
@@ -45,11 +46,19 @@ from argos.core.model import (
 )
 from argos.core.notices import Notice
 from argos.core.policy import JobPolicy, Policy
-from argos.core.ports import Ledger, StoredObject
+from argos.core.ports import (
+    Ledger,
+    ObjectMetadata,
+    ObjectSizeMismatchError,
+    ObjectTooLargeError,
+    StoredObject,
+)
 from argos.devtools.bootstrap_bus import declare_topology
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
+from argos.devtools.bootstrap_store import build_store, ensure_bucket
 from argos.platform.bus import JetStreamBus
 from argos.platform.ledger import SurrealLedger
+from argos.platform.objects import RustFsObjectStore
 from argos.platform.surreal import JsonValue, SurrealHttp
 from argos.services.dispatcher import run_dispatcher
 from argos.tools.fakes import FakeBus, FakeClock, InMemoryLedger, InMemoryObjectStore, SequentialIds
@@ -82,6 +91,7 @@ from argos.usecases.queries import get_case, get_document, get_job
 pytestmark = pytest.mark.anyio
 
 type Bus = JetStreamBus | FakeBus
+type Store = RustFsObjectStore | InMemoryObjectStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PDF_BYTES = (FIXTURES / "synthetic_one_page.pdf").read_bytes()
@@ -150,9 +160,28 @@ def store() -> InMemoryObjectStore:
     return InMemoryObjectStore()
 
 
-def build_services(
-    ledger: Ledger, bus: Bus, clock: FakeClock, store: InMemoryObjectStore
-) -> Services:
+@pytest.fixture
+async def rustfs_store(anyio_backend: str, settings: Settings) -> AsyncIterator[RustFsObjectStore]:
+    store = build_store(settings)
+    await store.connect()
+    try:
+        await store.ensure_bucket()
+        yield store
+    finally:
+        await store.close()
+
+
+@pytest.fixture(params=["rustfs", "memory"])
+def object_store(request: pytest.FixtureRequest, rustfs_store: RustFsObjectStore) -> Store:
+    return rustfs_store if request.param == "rustfs" else InMemoryObjectStore()
+
+
+def probe_key(name: str = "source.pdf") -> str:
+    marker = uuid4().hex[:12]
+    return f"tenants/probe-{marker}/cases/c1/documents/d1/{name}"
+
+
+def build_services(ledger: Ledger, bus: Bus, clock: FakeClock, store: Store) -> Services:
     return Services(
         ledger=ledger,
         object_store=store,
@@ -276,7 +305,7 @@ async def test_valid_pdf_is_accepted_before_extraction(
     artifact = await services.ledger.artifact(document.artifact_id)
     assert artifact is not None and artifact.state is ArtifactState.AVAILABLE
     assert artifact.key == source_document_key(tenant.id, result.case_id, result.document_id)
-    assert store.objects[artifact.key] == PDF_BYTES
+    assert await store.read(artifact.key, limit=len(PDF_BYTES)) == PDF_BYTES
 
     job = await services.ledger.job(result.job_id)
     assert job is not None
@@ -744,3 +773,125 @@ async def test_dispatcher_loop_publishes_and_recovers(
     ]
     job = await services.ledger.job(submitted.job_id)
     assert job is not None and (job.state, job.attempt) == (JobState.QUEUED, 2)
+
+
+async def test_artifact_bucket_is_private_and_idempotent(
+    settings: Settings, rustfs_store: RustFsObjectStore
+) -> None:
+    """S02.17 el bucket de artefactos se crea de forma idempotente y no sirve nada sin firma."""
+    await ensure_bucket(settings)
+    await ensure_bucket(settings)
+
+    key = probe_key()
+    payload = b"contenido sintetico"
+    await rustfs_store.put(key, chunks_of(payload), size=len(payload), mime="application/pdf")
+    base = f"{settings.artifact_endpoint}/{settings.artifact_bucket}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        listing = await client.get(base)
+        direct = await client.get(f"{base}/{key}")
+    assert (listing.status_code, direct.status_code) == (403, 403)
+    assert await rustfs_store.read(key, limit=len(payload)) == payload
+    await rustfs_store.delete(key)
+
+
+async def test_object_is_written_streaming_and_read_back(object_store: Store) -> None:
+    """S02.18 un objeto se escribe en flujo con su hash y se relee de forma acotada."""
+    payload = b"documento sintetico de prueba " * 64
+    key = probe_key()
+
+    stored = await object_store.put(
+        key, chunks_of(payload, size=97), size=len(payload), mime="application/pdf"
+    )
+    assert stored == StoredObject(
+        key=key, sha256=hashlib.sha256(payload).hexdigest(), size=len(payload)
+    )
+    assert await object_store.stat(key) == ObjectMetadata(
+        key=key, size=len(payload), mime="application/pdf"
+    )
+    assert await object_store.read(key, limit=len(payload)) == payload
+    with pytest.raises(ObjectTooLargeError):
+        await object_store.read(key, limit=len(payload) - 1)
+
+    missing = probe_key("ausente.pdf")
+    assert await object_store.stat(missing) is None
+    assert await object_store.read(missing, limit=1024) is None
+    await object_store.delete(key)
+
+
+async def test_declared_size_must_match_what_is_streamed(object_store: Store) -> None:
+    """S02.19 un tamaño declarado que no coincide con lo subido no deja objeto utilizable."""
+    payload = b"cuerpo mas corto de lo declarado"
+    key = probe_key()
+    with pytest.raises(ObjectSizeMismatchError):
+        await object_store.put(
+            key, chunks_of(payload), size=len(payload) + 1, mime="application/pdf"
+        )
+    assert await object_store.stat(key) is None
+
+
+async def test_exact_delete_removes_only_its_object(object_store: Store) -> None:
+    """S02.21 el borrado exacto elimina su objeto, deja intactos los demás y no falla si ya no está."""
+    payload = b"artefacto"
+    doomed, kept = probe_key("doomed.pdf"), probe_key("kept.pdf")
+    for key in (doomed, kept):
+        await object_store.put(key, chunks_of(payload), size=len(payload), mime="application/pdf")
+
+    await object_store.delete(doomed)
+    assert await object_store.stat(doomed) is None
+    assert await object_store.stat(kept) is not None
+    await object_store.delete(doomed)
+    await object_store.delete(kept)
+
+
+async def test_presigned_url_serves_only_that_object(
+    settings: Settings, rustfs_store: RustFsObjectStore
+) -> None:
+    """S02.20 una URL firmada breve sirve solo su objeto, caduca y sin firma no se sirve nada."""
+    payload = b"solo este objeto"
+    key, other = probe_key("wanted.pdf"), probe_key("other.pdf")
+    for target in (key, other):
+        await rustfs_store.put(
+            target, chunks_of(payload), size=len(payload), mime="application/pdf"
+        )
+
+    fresh = rustfs_store.presigned_get(key, expires_in=timedelta(minutes=5))
+    borrowed = rustfs_store.presigned_get(other, expires_in=timedelta(minutes=5))
+    stale_store = build_store(settings, clock=FakeClock(datetime.now(UTC) - timedelta(hours=1)))
+    stale = stale_store.presigned_get(key, expires_in=timedelta(seconds=60))
+
+    base = f"{settings.artifact_endpoint}/{settings.artifact_bucket}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        served = await client.get(fresh)
+        mismatched = await client.get(f"{base}/{key}?{borrowed.partition('?')[2]}")
+        expired = await client.get(stale)
+        naked = await client.get(f"{base}/{key}")
+
+    assert served.status_code == 200 and served.content == payload
+    assert mismatched.status_code == 403
+    assert expired.status_code == 403
+    assert naked.status_code == 403
+    for target in (key, other):
+        await rustfs_store.delete(target)
+
+
+async def test_intake_writes_the_original_to_the_real_store(
+    ledger: Ledger,
+    clock: FakeClock,
+    bus: FakeBus,
+    rustfs_store: RustFsObjectStore,
+    tenant: Tenant,
+) -> None:
+    """S02.22 el ingreso completo deja el original en el almacén real bajo la clave de su caso."""
+    services = build_services(ledger, bus, clock, rustfs_store)
+    submitted = await accepted_submission(services, tenant)
+
+    document = await ledger.document(submitted.document_id)
+    assert document is not None
+    artifact = await ledger.artifact(document.artifact_id)
+    assert artifact is not None
+    assert artifact.key == source_document_key(tenant.id, submitted.case_id, submitted.document_id)
+    assert await rustfs_store.stat(artifact.key) == ObjectMetadata(
+        key=artifact.key, size=len(PDF_BYTES), mime="application/pdf"
+    )
+    assert await rustfs_store.read(artifact.key, limit=len(PDF_BYTES)) == PDF_BYTES
+    await rustfs_store.delete(artifact.key)
