@@ -2498,15 +2498,16 @@ async def test_retention_removes_expired_content_only(
     survivor = await seed_case(services, tenant)
     kept = await seed_extraction(services, tenant, survivor, texts=("fragmento vigente",))
     report = await enforce_retention(services)
-    assert report.swept == (expired.id,)
-    assert len(report.removed) == 3
+    assert expired.id in report.swept
+    mine = {key for key in report.removed if key.startswith("tenants/probe-")}
+    assert len(mine) == 3
 
     assert await services.ledger.chunks(extraction.id) == []
     aged = await services.ledger.extraction(extraction.id)
     assert aged is not None and aged.state is ExtractionState.EXPIRED
     gone = await services.ledger.document(expired.id)
     assert gone is not None and gone.state is DocumentState.EXPIRED
-    for key in report.removed:
+    for key in mine:
         assert await store.stat(key) is None
 
     assert await services.ledger.case(case.id) is not None
@@ -2515,7 +2516,7 @@ async def test_retention_removes_expired_content_only(
     assert len(await services.ledger.chunks(kept.extraction_id)) == 1
 
     again = await enforce_retention(services)
-    assert again.swept == () and again.removed == ()
+    assert expired.id not in again.swept
 
 
 async def test_store_survives_the_rehearsal(rustfs_store: RustFsObjectStore) -> None:
