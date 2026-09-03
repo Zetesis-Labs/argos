@@ -23,7 +23,7 @@ from argos.core.model import (
     JobState,
 )
 from argos.core.ports import LedgerConflictError, StoredObject
-from argos.usecases.deps import Services
+from argos.usecases.deps import Bookkeeping, Services
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class Skipped:
 
 
 async def claim_attempt(
-    services: Services, message: JobMessage, *, consumer: str
+    services: Bookkeeping, message: JobMessage, *, consumer: str
 ) -> ClaimedAttempt | Skipped:
     job = await services.ledger.job(message.job_id)
     if job is None:
@@ -61,7 +61,7 @@ async def claim_attempt(
     return ClaimedAttempt(job=plan.job, attempt=plan.attempt)
 
 
-async def renew_lease(services: Services, job_id: str) -> Job | Skipped:
+async def renew_lease(services: Bookkeeping, job_id: str) -> Job | Skipped:
     job = await services.ledger.job(job_id)
     if job is None or job.state is not JobState.RUNNING:
         return Skipped("job is not running")
@@ -74,7 +74,7 @@ async def renew_lease(services: Services, job_id: str) -> Job | Skipped:
     return renewed if renewed is not None else Skipped("job vanished")
 
 
-async def _current_attempt(services: Services, job: Job, number: int) -> Attempt | None:
+async def _current_attempt(services: Bookkeeping, job: Job, number: int) -> Attempt | None:
     attempts = [
         attempt for attempt in await services.ledger.attempts(job.id) if attempt.number == number
     ]
@@ -82,7 +82,7 @@ async def _current_attempt(services: Services, job: Job, number: int) -> Attempt
 
 
 async def fail_attempt(
-    services: Services,
+    services: Bookkeeping,
     *,
     job_id: str,
     attempt_number: int,
