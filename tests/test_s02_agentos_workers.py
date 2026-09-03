@@ -16,9 +16,14 @@ from argos.config import Settings
 from argos.core.keys import source_document_key
 from argos.core.ledger import ATTEMPTS_EXHAUSTED, LEASE_LOST
 from argos.core.messages import (
+    CASE_COMPLETED_SUBJECT,
+    CONSUMERS,
     DOCUMENT_EXTRACTED_SUBJECT,
+    DOCUMENT_EXTRACTOR,
     DOCUMENT_FAILED_SUBJECT,
+    EVENTS_STREAM,
     JOB_SUBJECTS,
+    JOBS_STREAM,
     MESSAGE_ID_HEADER,
     JobMessage,
     decode_job_message,
@@ -41,9 +46,12 @@ from argos.core.model import (
 from argos.core.notices import Notice
 from argos.core.policy import JobPolicy, Policy
 from argos.core.ports import Ledger, StoredObject
+from argos.devtools.bootstrap_bus import declare_topology
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
+from argos.platform.bus import JetStreamBus
 from argos.platform.ledger import SurrealLedger
 from argos.platform.surreal import JsonValue, SurrealHttp
+from argos.services.dispatcher import run_dispatcher
 from argos.tools.fakes import FakeBus, FakeClock, InMemoryLedger, InMemoryObjectStore, SequentialIds
 from argos.usecases.consumers import (
     ClaimedAttempt,
@@ -59,6 +67,7 @@ from argos.usecases.dispatch import (
     DispatchReport,
     RecoveryReport,
     dispatch_once,
+    outbound_message,
     recover_leases_once,
 )
 from argos.usecases.documents import (
@@ -71,6 +80,8 @@ from argos.usecases.notices import NoticeOpened, NoticeRefused, open_notice_case
 from argos.usecases.queries import get_case, get_document, get_job
 
 pytestmark = pytest.mark.anyio
+
+type Bus = JetStreamBus | FakeBus
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PDF_BYTES = (FIXTURES / "synthetic_one_page.pdf").read_bytes()
@@ -139,9 +150,8 @@ def store() -> InMemoryObjectStore:
     return InMemoryObjectStore()
 
 
-@pytest.fixture
-def services(
-    ledger: Ledger, clock: FakeClock, bus: FakeBus, store: InMemoryObjectStore
+def build_services(
+    ledger: Ledger, bus: Bus, clock: FakeClock, store: InMemoryObjectStore
 ) -> Services:
     return Services(
         ledger=ledger,
@@ -152,6 +162,37 @@ def services(
         policy=TEST_POLICY,
         bucket="argos-test",
     )
+
+
+@pytest.fixture
+def services(
+    ledger: Ledger, clock: FakeClock, bus: FakeBus, store: InMemoryObjectStore
+) -> Services:
+    return build_services(ledger, bus, clock, store)
+
+
+@pytest.fixture(params=["jetstream", "fake"])
+async def delivery_bus(
+    request: pytest.FixtureRequest, anyio_backend: str, settings: Settings
+) -> AsyncIterator[Bus]:
+    if request.param == "fake":
+        yield FakeBus(max_deliveries=TEST_POLICY.jobs.max_deliveries)
+        return
+    jetstream = JetStreamBus(settings.nats_url, policy=TEST_POLICY.jobs)
+    await jetstream.connect()
+    try:
+        await jetstream.declare()
+        await jetstream.purge(JOBS_STREAM, EVENTS_STREAM)
+        yield jetstream
+    finally:
+        await jetstream.close()
+
+
+@pytest.fixture
+def delivery_services(
+    ledger: Ledger, clock: FakeClock, delivery_bus: Bus, store: InMemoryObjectStore
+) -> Services:
+    return build_services(ledger, delivery_bus, clock, store)
 
 
 async def chunks_of(data: bytes, size: int = 1024) -> AsyncIterator[bytes]:
@@ -314,14 +355,14 @@ async def test_publication_failure_keeps_the_command(
     entry_id = command_entry_id(submitted.job_id, 1)
     bus.failures_remaining = 1
 
-    first = await dispatch_once(services)
+    first = await dispatch_once(services.dispatching)
     assert first.failed == (entry_id,) and first.published == ()
     pending = await services.ledger.outbox_entry(entry_id)
     assert pending is not None
     assert pending.state is OutboxState.PENDING and pending.lease_until is None
     assert bus.published == []
 
-    second = await dispatch_once(services)
+    second = await dispatch_once(services.dispatching)
     assert second.published == (entry_id,)
     published = await services.ledger.outbox_entry(entry_id)
     assert published is not None and published.state is OutboxState.PUBLISHED
@@ -331,7 +372,9 @@ async def test_publication_failure_keeps_the_command(
     assert message.headers[MESSAGE_ID_HEADER] == f"{submitted.job_id}:1"
     assert decode_job_message(message.payload) == JobMessage(submitted.job_id, 1)
     assert set(json.loads(message.payload)) == {"job_id", "attempt"}
-    assert await dispatch_once(services) == DispatchReport(published=(), failed=(), skipped=())
+    assert await dispatch_once(services.dispatching) == DispatchReport(
+        published=(), failed=(), skipped=()
+    )
 
 
 async def test_two_deliveries_of_one_attempt_claim_once(
@@ -361,14 +404,16 @@ async def test_expired_lease_requeues_then_exhausts(
 ) -> None:
     """S02.7 un intento cuyo arrendamiento vence se reencola con intento nuevo o termina failed al agotar el presupuesto."""
     submitted = await accepted_submission(services, tenant)
-    assert (await dispatch_once(services)).published == (command_entry_id(submitted.job_id, 1),)
+    assert (await dispatch_once(services.dispatching)).published == (
+        command_entry_id(submitted.job_id, 1),
+    )
     await claimed(services, submitted.job_id, 1, "worker-a")
 
-    assert await recover_leases_once(services) == RecoveryReport(
+    assert await recover_leases_once(services.dispatching) == RecoveryReport(
         requeued=(), failed=(), skipped=()
     )
     clock.advance(TEST_POLICY.jobs.lease + timedelta(seconds=1))
-    recovered = await recover_leases_once(services)
+    recovered = await recover_leases_once(services.dispatching)
     assert recovered.requeued == (submitted.job_id,)
 
     job = await services.ledger.job(submitted.job_id)
@@ -387,7 +432,7 @@ async def test_expired_lease_requeues_then_exhausts(
 
     await claimed(services, submitted.job_id, 2, "worker-b")
     clock.advance(TEST_POLICY.jobs.lease + timedelta(seconds=1))
-    exhausted = await recover_leases_once(services)
+    exhausted = await recover_leases_once(services.dispatching)
     assert exhausted.failed == (submitted.job_id,)
     job = await services.ledger.job(submitted.job_id)
     assert job is not None
@@ -562,3 +607,140 @@ async def test_notice_opens_case_and_analysis_job_atomically(
     assert await open_notice_case(
         services, tenant_id=tenant.id, notice=Notice(text="   "), correlation_id="c5"
     ) == NoticeRefused("notice.empty")
+
+
+async def test_bus_topology_is_declared_idempotently(settings: Settings) -> None:
+    """S02.12 los streams y los consumidores durables de JetStream se declaran de forma idempotente."""
+    policy = Policy()
+    await declare_topology(settings, policy)
+    state = await declare_topology(settings, policy)
+
+    assert {stream.name for stream in state.streams} == {JOBS_STREAM, EVENTS_STREAM}
+    jobs = next(stream for stream in state.streams if stream.name == JOBS_STREAM)
+    events = next(stream for stream in state.streams if stream.name == EVENTS_STREAM)
+    assert jobs.subjects == frozenset(JOB_SUBJECTS.values())
+    assert jobs.workqueue
+    assert events.subjects == frozenset(
+        {DOCUMENT_EXTRACTED_SUBJECT, DOCUMENT_FAILED_SUBJECT, CASE_COMPLETED_SUBJECT}
+    )
+    assert not events.workqueue
+    for stream in state.streams:
+        assert stream.duplicate_window > policy.jobs.outbox_lease
+
+    declared = {consumer.durable: consumer for consumer in state.consumers}
+    assert set(declared) == {spec.durable for spec in CONSUMERS}
+    for spec in CONSUMERS:
+        consumer = declared[spec.durable]
+        assert consumer.stream == spec.stream
+        assert consumer.subjects == frozenset(spec.subjects)
+        assert consumer.explicit_ack
+        assert consumer.ack_wait == policy.jobs.lease
+        assert consumer.max_deliveries == policy.jobs.max_deliveries
+
+
+async def test_command_reaches_the_durable_consumer(
+    delivery_services: Services, delivery_bus: Bus, tenant: Tenant
+) -> None:
+    """S02.13 el comando confirmado llega al consumidor durable con solo job_id y attempt."""
+    submitted = await accepted_submission(delivery_services, tenant)
+    entry_id = command_entry_id(submitted.job_id, 1)
+    assert (await dispatch_once(delivery_services.dispatching)).published == (entry_id,)
+
+    source = await delivery_bus.deliveries(DOCUMENT_EXTRACTOR)
+    delivered = await source.fetch(limit=10, timeout=2.0)
+    assert len(delivered) == 1
+    delivery = delivered[0]
+    assert delivery.message == JobMessage(submitted.job_id, 1)
+    assert delivery.subject == JOB_SUBJECTS[JobType.DOCUMENT_EXTRACT]
+    assert delivery.delivery_count == 1
+
+    claimed_attempt = await claim_attempt(
+        delivery_services, delivery.message, consumer=DOCUMENT_EXTRACTOR.durable
+    )
+    assert isinstance(claimed_attempt, ClaimedAttempt)
+    await delivery.ack()
+
+    published = await delivery_services.ledger.outbox_entry(entry_id)
+    assert published is not None and published.state is OutboxState.PUBLISHED
+    assert await source.fetch(limit=10, timeout=1.0) == []
+
+
+async def test_republishing_one_attempt_delivers_once(
+    delivery_services: Services, delivery_bus: Bus, tenant: Tenant
+) -> None:
+    """S02.14 publicar dos veces el mismo intento entrega una sola vez."""
+    submitted = await accepted_submission(delivery_services, tenant)
+    entry_id = command_entry_id(submitted.job_id, 1)
+    assert (await dispatch_once(delivery_services.dispatching)).published == (entry_id,)
+
+    entry = await delivery_services.ledger.outbox_entry(entry_id)
+    assert entry is not None
+    await delivery_bus.publish(outbound_message(entry))
+
+    source = await delivery_bus.deliveries(DOCUMENT_EXTRACTOR)
+    delivered = await source.fetch(limit=10, timeout=2.0)
+    assert [d.message for d in delivered] == [JobMessage(submitted.job_id, 1)]
+
+
+async def test_unconfirmed_delivery_repeats_without_effect(
+    delivery_services: Services, delivery_bus: Bus, tenant: Tenant
+) -> None:
+    """S02.15 una entrega que el consumidor no confirma vuelve a entregarse y la segunda no tiene efecto."""
+    submitted = await accepted_submission(delivery_services, tenant)
+    await dispatch_once(delivery_services.dispatching)
+    source = await delivery_bus.deliveries(DOCUMENT_EXTRACTOR)
+
+    first = (await source.fetch(limit=10, timeout=2.0))[0]
+    claimed_attempt = await claim_attempt(delivery_services, first.message, consumer="worker-a")
+    assert isinstance(claimed_attempt, ClaimedAttempt)
+    await first.nak()
+
+    repeated = (await source.fetch(limit=10, timeout=2.0))[0]
+    assert repeated.message == first.message
+    assert repeated.delivery_count == 2
+    assert isinstance(
+        await claim_attempt(delivery_services, repeated.message, consumer="worker-b"), Skipped
+    )
+    await repeated.ack()
+
+    attempts = await delivery_services.ledger.attempts(submitted.job_id)
+    assert [(a.number, a.consumer, a.state) for a in attempts] == [
+        (1, "worker-a", AttemptState.RUNNING)
+    ]
+    entries = await delivery_services.ledger.outbox_of_job(submitted.job_id)
+    assert [(e.id, e.state) for e in entries] == [
+        (command_entry_id(submitted.job_id, 1), OutboxState.PUBLISHED)
+    ]
+
+
+async def test_dispatcher_loop_publishes_and_recovers(
+    services: Services, tenant: Tenant, clock: FakeClock, bus: FakeBus
+) -> None:
+    """S02.16 el bucle del dispatcher publica lo pendiente, reencola arrendamientos vencidos y para cuando se le pide."""
+    submitted = await accepted_submission(services, tenant)
+    await claimed(services, submitted.job_id, 1, "worker-a")
+
+    interval = TEST_POLICY.jobs.lease.total_seconds() + 1
+    naps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        naps.append(seconds)
+        clock.advance(timedelta(seconds=seconds))
+
+    ticks = await run_dispatcher(
+        services.dispatching, stop=lambda: len(naps) >= 3, sleep=sleep, interval=interval
+    )
+
+    assert naps == [interval, interval, interval]
+    assert [t.dispatch.published for t in ticks] == [
+        (command_entry_id(submitted.job_id, 1),),
+        (),
+        (command_entry_id(submitted.job_id, 2),),
+    ]
+    assert [t.recovery.requeued for t in ticks] == [(), (submitted.job_id,), ()]
+    assert [decode_job_message(m.payload) for m in bus.published] == [
+        JobMessage(submitted.job_id, 1),
+        JobMessage(submitted.job_id, 2),
+    ]
+    job = await services.ledger.job(submitted.job_id)
+    assert job is not None and (job.state, job.attempt) == (JobState.QUEUED, 2)

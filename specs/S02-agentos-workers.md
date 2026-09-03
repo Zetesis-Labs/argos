@@ -581,3 +581,53 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
   la repetición devuelve el mismo caso y trabajo sin crear nada; el otro tenant
   obtiene un caso distinto; los dos últimos se rechazan con
   `notice.text_too_long` y `notice.empty` (W1.2–3, R1, R9, R12)
+
+## S02.12 Los streams y los consumidores durables se declaran de forma idempotente
+
+- Dado un NATS con JetStream recién arrancado
+- Cuando `bootstrap-bus` se ejecuta dos veces seguidas
+- Entonces existen `ARGOS_JOBS` con los tres subjects de comando y retención de
+  cola de trabajo, y `ARGOS_EVENTS` con los tres de evento y retención por
+  límites; la ventana de deduplicación de ambos supera el arrendamiento del
+  dispatcher; y los consumidores `document-extractor-v1`, `case-analyzer-v1`,
+  `source-ingestor-v1` y `workflow-resumer-v1` son durables, con ack explícito,
+  espera de confirmación igual al arrendamiento del trabajo, su máximo de
+  entregas y exactamente los subjects de su cometido (constitución §9; S02 §8)
+
+## S02.13 El comando confirmado llega al consumidor durable con solo job_id y attempt
+
+- Dado un documento aceptado cuyo comando sigue pendiente en el outbox
+- Cuando el dispatcher publica y el consumidor `document-extractor-v1` recoge su
+  entrega
+- Entonces recibe un solo mensaje en el subject del trabajo, con cuerpo
+  `{job_id, attempt}` y primera entrega; reclama el intento, confirma, la
+  entrada del outbox queda `published` y no hay nada más que recoger (R24, R25;
+  constitución §9)
+
+## S02.14 Publicar dos veces el mismo intento entrega una sola vez
+
+- Dado un comando ya publicado cuya entrada de outbox se vuelve a publicar,
+  como haría un dispatcher que murió antes de marcarla
+- Cuando el consumidor recoge sus entregas
+- Entonces recibe un único mensaje: la deduplicación por `Nats-Msg-Id` descarta
+  la repetición dentro de la ventana (R22; S02 §8)
+
+## S02.15 Una entrega que el consumidor no confirma vuelve a entregarse y la segunda no tiene efecto
+
+- Dado un consumidor que reclama el intento y no confirma su entrega
+- Cuando la entrega se repite y otro consumidor intenta reclamar el mismo
+  intento
+- Entonces la segunda entrega llega con contador 2 y el mismo cuerpo, el
+  segundo consumidor la reconoce como obsoleta y la confirma sin efecto, sigue
+  existiendo un único intento del primer consumidor y el outbox no gana
+  entradas (R21, R25; S02 §8)
+
+## S02.16 El bucle del dispatcher publica lo pendiente y reencola arrendamientos vencidos
+
+- Dado un trabajo reclamado cuyo arrendamiento vence mientras el bucle duerme
+- Cuando el dispatcher se ejecuta hasta que se le pide parar
+- Entonces la primera pasada publica el comando del intento 1, la segunda no
+  publica nada y reencola el trabajo con el intento 2, la tercera publica el
+  comando del intento 2 pasado su backoff, el bus recibió exactamente esos dos
+  mensajes y el bucle termina cuando su condición de parada lo pide (R21, R25,
+  R28)
