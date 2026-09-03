@@ -13,10 +13,14 @@ from uuid import uuid4
 import httpx
 import pytest
 import zstandard
+from agno.os import AgentOS
+from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from opentelemetry.sdk.trace import TracerProvider
 
-from argos.agents.cluster import ANALYSIS_OF_AGENT, build_cluster
+from argos.agents.cluster import ANALYSIS_OF_AGENT, TEAM_NAME, build_cluster
 from argos.agents.tools import dumps, history_payload, manifest_payload, tools_for
+from argos.api.gateway import Gateway, build_app
 from argos.config import Settings
 from argos.core.agents import INVESTIGATION_TEAM, AgentName, Capability, capabilities_of
 from argos.core.analysis import (
@@ -29,6 +33,8 @@ from argos.core.analysis import (
     score,
     usable,
 )
+from argos.core.capabilities import CARD_PATH, GATEWAY_CAPABILITIES, MESSAGES_PATH
+from argos.core.identity import Identity, Role
 from argos.core.keys import extraction_manifest_key, extraction_text_key, source_document_key
 from argos.core.ledger import ATTEMPTS_EXHAUSTED, LEASE_LOST, new_job
 from argos.core.messages import (
@@ -46,6 +52,7 @@ from argos.core.messages import (
     decode_job_message,
 )
 from argos.core.model import (
+    TERMINAL_CASE_STATES,
     Analysis,
     ArtifactState,
     AttemptState,
@@ -80,6 +87,7 @@ from argos.core.notices import Notice
 from argos.core.policy import AnalysisPolicy, DocumentLimits, JobPolicy, Policy
 from argos.core.ports import (
     Clock,
+    ConversationBrief,
     Investigation,
     Ledger,
     ObjectMetadata,
@@ -88,7 +96,8 @@ from argos.core.ports import (
     PdfEncryptedError,
     StoredObject,
 )
-from argos.core.reports import investigation_prompt
+from argos.core.reports import NO_VERDICT_YET, investigation_prompt
+from argos.core.reprocess import reprocess_options
 from argos.devtools.bootstrap_bus import declare_topology
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.devtools.bootstrap_store import build_store, ensure_bucket
@@ -176,7 +185,10 @@ LEDGER_TABLES = {
 ANALYSES = tuple(ANALYSIS_OF_AGENT[member] for member in INVESTIGATION_TEAM)
 MEMORY_TABLES = {"entity", "entity_link", "case_entity", "warning", "signal", "verdict"}
 SHARED_TABLES = {"entity", "entity_link", "warning"}
-TEST_POLICY = Policy(jobs=JobPolicy(max_attempts=2), analysis=AnalysisPolicy(chunk_budget=2))
+TEST_POLICY = Policy(
+    jobs=JobPolicy(max_attempts=2),
+    analysis=AnalysisPolicy(chunk_budget=2, budget=timedelta(seconds=1)),
+)
 
 
 @pytest.fixture(scope="session")
@@ -1877,3 +1889,384 @@ async def test_real_cluster_analyses_without_leaking_text(
         )
     finally:
         await services.ledger.delete_tenant_data(tenant.id)
+
+
+CURATOR_TOKEN = "test-curator"
+SERVICE_TOKEN = "test-service"
+OTHER_TOKEN = "test-other"
+
+
+class ScriptedAdvisor:
+    def __init__(self, answer: str = "El nivel no cambia; revisa las acciones.") -> None:
+        self._answer = answer
+        self.briefs: list[ConversationBrief] = []
+
+    async def answer(self, brief: ConversationBrief) -> str:
+        self.briefs.append(brief)
+        return self._answer
+
+
+def identities_of(tenant: Tenant, stranger: Tenant) -> dict[str, Identity]:
+    return {
+        SERVICE_TOKEN: Identity(name="dev", role=Role.SERVICE, tenant_id=tenant.id),
+        OTHER_TOKEN: Identity(name="ajeno", role=Role.SERVICE, tenant_id=stranger.id),
+        CURATOR_TOKEN: Identity(name="curador", role=Role.CURATOR, tenant_id=None),
+    }
+
+
+def build_gateway_app(
+    services: Services,
+    identities: dict[str, Identity],
+    advisor: ScriptedAdvisor,
+    clock: FakeClock,
+) -> FastAPI:
+    async def sleep(seconds: float) -> None:
+        clock.advance(timedelta(seconds=seconds))
+
+    gateway = Gateway(
+        services=services,
+        advisors=lambda tenant_id, case_id: advisor,
+        identities=identities,
+        version="test",
+        public_url="http://argos.test",
+        sleep=sleep,
+    )
+    return build_app(gateway)
+
+
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def stranger(ledger: Ledger) -> AsyncIterator[Tenant]:
+    record = Tenant(id=f"t-{uuid4().hex[:12]}", name="tenant ajeno", active=True, revision=0)
+    await ledger.commit([Insert(record)])
+    try:
+        yield record
+    finally:
+        await ledger.delete_tenant_data(record.id)
+
+
+@pytest.fixture
+def advisor() -> ScriptedAdvisor:
+    return ScriptedAdvisor()
+
+
+@pytest.fixture
+def gateway_app(
+    services: Services,
+    tenant: Tenant,
+    stranger: Tenant,
+    advisor: ScriptedAdvisor,
+    clock: FakeClock,
+) -> FastAPI:
+    return build_gateway_app(services, identities_of(tenant, stranger), advisor, clock)
+
+
+def asgi_client(app: FastAPI) -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://argos.test")
+
+
+@pytest.fixture
+async def client(anyio_backend: str, gateway_app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    async with asgi_client(gateway_app) as running:
+        yield running
+
+
+async def test_gateway_derives_the_tenant_from_the_identity(
+    client: httpx.AsyncClient, tenant: Tenant, stranger: Tenant
+) -> None:
+    """S02.38 el gateway deriva el tenant de la identidad y nunca del cuerpo."""
+    body = {"text": "Invierte con Nexolabs y dobla tu dinero", "tenant_id": stranger.id}
+    assert (await client.post("/v1/notices", json=body)).status_code == 401
+    unknown = await client.post("/v1/notices", json=body, headers=bearer("desconocido"))
+    assert unknown.status_code == 401
+
+    accepted = await client.post("/v1/notices", json=body, headers=bearer(SERVICE_TOKEN))
+    assert accepted.status_code in (200, 202)
+    case_id = str(accepted.json()["case_id"])
+    mine = await client.get(f"/v1/cases/{case_id}", headers=bearer(SERVICE_TOKEN))
+    theirs = await client.get(f"/v1/cases/{case_id}", headers=bearer(OTHER_TOKEN))
+    assert mine.status_code == 200 and theirs.status_code == 404
+
+    curator = await client.post("/v1/notices", json=body, headers=bearer(CURATOR_TOKEN))
+    assert curator.status_code == 403
+    assert curator.json() == {"error": "identity.not_a_tenant"}
+    denied = await client.post("/v1/documents/x/reprocess", headers=bearer(SERVICE_TOKEN))
+    assert denied.status_code == 403 and denied.json() == {"error": "identity.not_curator"}
+
+
+async def test_agentos_publishes_capabilities_only(
+    gateway_app: FastAPI, settings: Settings
+) -> None:
+    """S02.39 AgentOS publica capacidades y no descubre especialistas ni workers."""
+    served = AgentOS(
+        id="argos-test",
+        name="Argos",
+        base_app=gateway_app,
+        db=build_agno_db(settings),
+        telemetry=False,
+    )
+    app = served.get_app()
+    business = {
+        (route.path, method)
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path.startswith("/v1")
+        for method in route.methods or set()
+    }
+    assert business == {(spec.path, spec.method) for spec in GATEWAY_CAPABILITIES} | {
+        (MESSAGES_PATH, "POST")
+    }
+
+    async with asgi_client(app) as client:
+        card = await client.get(CARD_PATH)
+        listed = await client.get("/agents", headers=bearer(CURATOR_TOKEN))
+        teams = await client.get("/teams", headers=bearer(CURATOR_TOKEN))
+        anonymous = await client.get("/agents")
+        service = await client.get("/agents", headers=bearer(SERVICE_TOKEN))
+    rendered = card.text
+    skills = card.json()["skills"]
+    assert {str(skill["id"]) for skill in skills} == {
+        str(spec.name) for spec in GATEWAY_CAPABILITIES
+    }
+    assert all(str(agent) not in rendered for agent in AgentName)
+    assert TEAM_NAME not in rendered and "worker" not in rendered
+    assert listed.json() == [] and teams.json() == []
+    assert anonymous.status_code == 401 and service.status_code == 403
+
+
+async def analyzed_by(
+    services: Services, job_id: str, *, signals: tuple[DraftSignal, ...] = ()
+) -> Analyzed:
+    job = await services.ledger.job(job_id)
+    assert job is not None
+    claimed = await claimed_analysis(services, job)
+    analyzed = await analyze_case(
+        services,
+        ScriptedInvestigator(Investigation(signals=signals, entities=(), missing=())),
+        ScriptedNarrator(),
+        job=claimed.job,
+        attempt=claimed.attempt,
+    )
+    assert isinstance(analyzed, Analyzed)
+    return analyzed
+
+
+async def test_analyze_notice_returns_within_the_budget(
+    client: httpx.AsyncClient, services: Services, clock: FakeClock
+) -> None:
+    """S02.40 analyze_notice devuelve el veredicto dentro del presupuesto y el caso sobrevive al proceso."""
+    waiting = await client.post(
+        "/v1/notices",
+        json={"text": "Rentabilidad garantizada del 40% en Nexolabs Capital"},
+        headers=bearer(SERVICE_TOKEN),
+    )
+    assert waiting.status_code == 202
+    accepted = waiting.json()
+    assert accepted["state"] == str(CaseState.RECEIVED) and accepted["verdict"] is None
+    job = await services.ledger.job(str(accepted["job_id"]))
+    assert job is not None and job.type is JobType.CASE_ANALYZE
+
+    await analyzed_by(services, str(accepted["job_id"]))
+    recovered = await client.get(f"/v1/cases/{accepted['case_id']}", headers=bearer(SERVICE_TOKEN))
+    assert recovered.status_code == 200
+    assert recovered.json()["state"] == str(CaseState.VERDICT_ISSUED)
+    assert recovered.json()["verdict"]["version"] == 1
+
+    settled = await client.post(
+        "/v1/notices",
+        json={"text": "Rentabilidad garantizada del 40% en Nexolabs Capital"},
+        headers=bearer(SERVICE_TOKEN),
+    )
+    assert settled.status_code == 200
+    assert settled.json()["reused"] and settled.json()["verdict"]["version"] == 1
+
+
+async def test_documents_are_accepted_before_extraction(
+    client: httpx.AsyncClient, store: InMemoryObjectStore
+) -> None:
+    """S02.41 enviar un documento por la API responde antes de extraer."""
+    accepted = await client.post(
+        "/v1/documents",
+        files={"file": ("aviso.pdf", PDF_BYTES, "application/pdf")},
+        headers=bearer(SERVICE_TOKEN),
+    )
+    assert accepted.status_code == 202
+    body = accepted.json()
+    assert body["job_state"] == str(JobState.QUEUED) and not body["reused"]
+    assert store.objects
+
+    seen = await client.get(f"/v1/jobs/{body['job_id']}", headers=bearer(SERVICE_TOKEN))
+    assert seen.status_code == 200
+    assert seen.json()["state"] == str(JobState.QUEUED)
+    assert seen.json()["public_error"] is None
+
+    rejected = await client.post(
+        "/v1/documents",
+        files={"file": ("aviso.pdf", b"no soy un pdf", "application/pdf")},
+        headers=bearer(SERVICE_TOKEN),
+    )
+    assert rejected.status_code == 422
+    assert rejected.json() == {"error": "document.not_pdf"}
+
+
+async def test_api_hides_other_tenants(client: httpx.AsyncClient) -> None:
+    """S02.42 la API no deja ver el caso de otro tenant."""
+    accepted = await client.post(
+        "/v1/documents",
+        files={"file": ("aviso.pdf", PDF_BYTES, "application/pdf")},
+        headers=bearer(SERVICE_TOKEN),
+    )
+    body = accepted.json()
+    job = await client.get(f"/v1/jobs/{body['job_id']}", headers=bearer(OTHER_TOKEN))
+    case = await client.get(f"/v1/cases/{body['case_id']}", headers=bearer(OTHER_TOKEN))
+    question = await client.post(
+        f"/v1/cases/{body['case_id']}/questions",
+        json={"question": "¿qué sabes?"},
+        headers=bearer(OTHER_TOKEN),
+    )
+    assert [job.status_code, case.status_code, question.status_code] == [404, 404, 404]
+    assert job.json() == {"error": "job.not_found"}
+    assert case.json() == {"error": "case.not_found"}
+
+
+async def test_ask_case_answers_without_touching_the_verdict(
+    client: httpx.AsyncClient,
+    services: Services,
+    tenant: Tenant,
+    advisor: ScriptedAdvisor,
+    clock: FakeClock,
+) -> None:
+    """S02.43 ask_case responde con la evidencia persistida y no muta el veredicto."""
+    case = await seed_case(services, tenant)
+    await seed_extraction(services, tenant, case, texts=("promesa de rentabilidad",))
+    job = await seed_analysis_job(services, tenant, case)
+    await analyzed_by(services, job.id, signals=(signal_of(clock, Analysis.REGISTRIES),))
+
+    answered = await client.post(
+        f"/v1/cases/{case.id}/questions",
+        json={"question": "¿Puedo recuperar el dinero?"},
+        headers=bearer(SERVICE_TOKEN),
+    )
+    assert answered.status_code == 200
+    assert answered.json()["answer"] == "El nivel no cambia; revisa las acciones."
+    assert advisor.briefs[0].quotes and advisor.briefs[0].level is RiskLevel.MEDIUM
+
+    verdict = await services.ledger.current_verdict(case.id)
+    assert verdict is not None and (verdict.version, verdict.level) == (1, RiskLevel.MEDIUM)
+    assert len(await services.ledger.signals_of_case(case.id)) == 1
+
+    pending = await seed_case(services, tenant)
+    unanswered = await client.post(
+        f"/v1/cases/{pending.id}/questions",
+        json={"question": "¿ya está?"},
+        headers=bearer(SERVICE_TOKEN),
+    )
+    assert unanswered.status_code == 200
+    assert unanswered.json()["answer"] == NO_VERDICT_YET
+    assert unanswered.json()["verdict"] is None
+
+
+async def test_only_the_curator_reprocesses(
+    client: httpx.AsyncClient, services: Services, tenant: Tenant, clock: FakeClock
+) -> None:
+    """S02.44 reprocesar es del curador, conserva la extracción y supera el veredicto."""
+    submitted = await accepted_submission(services, tenant)
+    await complete_document_job(services, submitted.job_id)
+    queued = await resume_case(services, JobMessage(job_id=submitted.job_id, attempt=1))
+    assert isinstance(queued, AnalysisQueued)
+    first = await analyzed_by(services, queued.job_id, signals=(signal_of(clock, Analysis.DOMAIN),))
+    assert first.case.state is CaseState.VERDICT_ISSUED
+
+    refused = await client.post(
+        f"/v1/documents/{submitted.document_id}/reprocess", headers=bearer(SERVICE_TOKEN)
+    )
+    assert refused.status_code == 403
+    assert len(await services.ledger.jobs_of_case(submitted.case_id)) == 2
+
+    again = await client.post(
+        f"/v1/documents/{submitted.document_id}/reprocess", headers=bearer(CURATOR_TOKEN)
+    )
+    assert again.status_code == 202
+    reprocessing = again.json()
+    assert reprocessing["options"] == reprocess_options(2)
+    fresh = await services.ledger.job(str(reprocessing["job_id"]))
+    assert fresh is not None and fresh.previous_job_id == submitted.job_id
+    case = await services.ledger.case(submitted.case_id)
+    assert case is not None and case.state is CaseState.AWAITING_PROCESSING
+    kept = await services.ledger.extractions_of_document(submitted.document_id)
+    assert [extraction.state for extraction in kept] == [ExtractionState.AVAILABLE]
+
+    await complete_document_job(services, fresh.id)
+    requeued = await resume_case(services, JobMessage(job_id=fresh.id, attempt=1))
+    assert isinstance(requeued, AnalysisQueued)
+    second = await analyzed_by(services, requeued.job_id)
+    assert second.verdict.version == 2
+    current = await services.ledger.current_verdict(submitted.case_id)
+    assert current is not None and current.version == 2
+
+
+async def test_lost_analysis_attempt_does_not_duplicate_the_verdict(
+    services: Services, tenant: Tenant, clock: FakeClock
+) -> None:
+    """S02.45 un analizador que muere con el intento abierto no duplica el veredicto."""
+    case = await seed_case(services, tenant)
+    job = await seed_analysis_job(services, tenant, case)
+    abandoned = await claimed_analysis(services, job)
+    assert abandoned.job.state is JobState.RUNNING
+
+    clock.advance(TEST_POLICY.jobs.lease + timedelta(seconds=1))
+    recovery = await recover_leases_once(services.dispatching)
+    assert recovery.requeued == (job.id,)
+    lost = await services.ledger.attempts(job.id)
+    assert [attempt.state for attempt in lost] == [AttemptState.LOST]
+
+    clock.advance(TEST_POLICY.jobs.backoff(1))
+    retried = await claim_attempt(
+        services, JobMessage(job_id=job.id, attempt=2), consumer=CASE_ANALYZER.durable
+    )
+    assert isinstance(retried, ClaimedAttempt)
+    analyzed = await analyze_case(
+        services,
+        ScriptedInvestigator(Investigation(signals=(), entities=(), missing=())),
+        ScriptedNarrator(),
+        job=retried.job,
+        attempt=retried.attempt,
+    )
+    assert isinstance(analyzed, Analyzed)
+    assert analyzed.case.state in TERMINAL_CASE_STATES
+
+    verdicts = [analyzed.verdict.version]
+    assert verdicts == [1]
+    events = [
+        entry
+        for entry in await services.ledger.outbox_of_job(job.id)
+        if entry.kind is OutboxKind.EVENT
+    ]
+    assert [entry.subject for entry in events] == [CASE_COMPLETED_SUBJECT]
+
+
+async def test_document_on_a_settled_case_creates_a_linked_case(
+    services: Services, tenant: Tenant, clock: FakeClock
+) -> None:
+    """S02.46 un documento enviado a un caso con veredicto crea un caso vinculado."""
+    case = await seed_case(services, tenant)
+    await seed_extraction(services, tenant, case, texts=("promesa de rentabilidad",))
+    job = await seed_analysis_job(services, tenant, case)
+    settled = await analyzed_by(services, job.id, signals=(signal_of(clock, Analysis.PATTERNS),))
+    assert settled.case.state is CaseState.VERDICT_ISSUED
+
+    submitted = await submit_document(services, upload_of(tenant, case_id=case.id))
+    assert isinstance(submitted, DocumentAccepted)
+    assert submitted.case_id != case.id
+    linked = await services.ledger.case(submitted.case_id)
+    assert linked is not None and linked.previous_case_id == case.id
+    assert linked.state is CaseState.AWAITING_PROCESSING
+
+    document = await services.ledger.document(submitted.document_id)
+    assert document is not None and document.case_id == linked.id
+    unchanged = await services.ledger.current_verdict(case.id)
+    assert unchanged is not None and unchanged.version == settled.verdict.version
+    frozen = await services.ledger.case(case.id)
+    assert frozen is not None and frozen.state is CaseState.VERDICT_ISSUED
