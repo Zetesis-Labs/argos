@@ -23,9 +23,9 @@ implementada hasta que sus casos de aceptación tengan test y código.
   contraseñas de los usuarios de base de datos y se vuelve a ejecutar
 - Entonces existen el namespace `agno` con la base `sessions`, el namespace
   `argos` con la base `ops`, el usuario `agent` en `argos/ops` y el usuario
-  `runtime` en `agno/sessions`; `schema_version:current` tiene versión 1 y
-  fecha de aplicación; la segunda ejecución no falla ni cambia la versión y
-  solo las contraseñas nuevas permiten iniciar sesión
+  `runtime` en `agno/sessions`; `schema_version:current` tiene la versión que
+  declara `bootstrap-db` y fecha de aplicación; la segunda ejecución no falla
+  ni cambia la versión y solo las contraseñas nuevas permiten iniciar sesión
 
 ## S01.2 El usuario de los agentes entra por MCP con token
 

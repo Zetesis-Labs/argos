@@ -49,6 +49,7 @@ services:
       SURREAL_ROOT_PASSWORD: ${SURREAL_ROOT_PASSWORD:-root}
       SURREAL_AGENT_PASSWORD: ${SURREAL_AGENT_PASSWORD:-agent-dev-password}
       SURREAL_RUNTIME_PASSWORD: ${SURREAL_RUNTIME_PASSWORD:-runtime-dev-password}
+      SURREAL_LEDGER_PASSWORD: ${SURREAL_LEDGER_PASSWORD:-ledger-dev-password}
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-argos-master-key}
       LANGFUSE_HOST: http://langfuse-web:3000
