@@ -32,7 +32,10 @@ from argos.core.ports import (
     ObjectMetadata,
     ObjectSizeMismatchError,
     ObjectTooLargeError,
+    OpenPdf,
     OutboundMessage,
+    PageOcr,
+    PdfError,
     StoredObject,
 )
 
@@ -326,6 +329,55 @@ class FakeDeliveries:
             queued.inflight = True
             queued.deliveries += 1
         return [FakeDelivery(queued) for queued in ready]
+
+
+class RecordingOcr:
+    """Registra cada página que se le pide; delega en un OCR real o devuelve un texto fijo."""
+
+    def __init__(self, inner: PageOcr | None = None, *, text: str = "") -> None:
+        self._inner = inner
+        self._text = text
+        self.calls: list[int] = []
+
+    def text_of(self, image: bytes, *, language: str) -> str:
+        self.calls.append(len(image))
+        if self._inner is not None:
+            return self._inner.text_of(image, language=language)
+        return self._text
+
+
+class StubPdf:
+    def __init__(self, pages: Sequence[str]) -> None:
+        self._pages = tuple(pages)
+        self.closed = False
+
+    @property
+    def page_count(self) -> int:
+        return len(self._pages)
+
+    def text_of(self, number: int) -> str:
+        return self._pages[number - 1]
+
+    def image_of(self, number: int, *, scale: float) -> bytes:
+        return f"page-{number}@{scale}".encode()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class StubPdfReader:
+    """Devuelve páginas fijas o el fallo permanente que se le pida."""
+
+    def __init__(self, pages: Sequence[str] = (), *, error: PdfError | None = None) -> None:
+        self._pages = tuple(pages)
+        self._error = error
+        self.opened: list[int] = []
+
+    def open(self, data: bytes) -> OpenPdf:
+        self.opened.append(len(data))
+        if self._error is not None:
+            raise self._error
+        return StubPdf(self._pages)
 
 
 class FakeBus:
