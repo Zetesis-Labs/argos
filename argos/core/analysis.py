@@ -179,3 +179,20 @@ def aggregate_history(
         last_seen_at=seen[-1] if seen else None,
         confirmed=any(appearance.review_state is ReviewState.CONFIRMED for appearance in counted),
     )
+
+
+CASEFOLDED = (EntityKind.DOMAIN, EntityKind.EMAIL, EntityKind.HANDLE)
+COMPACTED = (EntityKind.IBAN, EntityKind.PHONE, EntityKind.WALLET)
+
+
+def normalized_identifier(kind: EntityKind, value: str) -> str:
+    """Lo mínimo para que la memoria compartida no se parta por mayúsculas o
+    espacios. Todavía no es R2: falta el dominio registrable, el prefijo
+    telefónico por defecto y los dígitos de control del IBAN."""
+    trimmed = " ".join(value.split())
+    if kind in CASEFOLDED:
+        return trimmed.casefold()
+    if kind in COMPACTED:
+        compact = trimmed.replace(" ", "").replace("-", "")
+        return compact.upper() if kind is EntityKind.IBAN else compact
+    return trimmed

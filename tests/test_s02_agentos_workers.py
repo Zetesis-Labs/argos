@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -96,6 +96,7 @@ from argos.core.ports import (
     Ledger,
     ObjectMetadata,
     ObjectSizeMismatchError,
+    ObjectStoreError,
     ObjectTooLargeError,
     PdfEncryptedError,
     StoredObject,
@@ -604,20 +605,56 @@ async def test_transient_failure_retries_and_permanent_does_not(
     assert isinstance(repeated, Skipped)
 
 
-def extraction_result() -> ExtractionResult:
+async def reserved_derivatives(services: Services, job: Job, extraction_id: str) -> tuple[str, str]:
+    """Los derivados nacen como referencia `uploading`, igual que en el ingreso."""
+    now = services.clock.now()
+    reserved: list[Artifact] = []
+    for key, mime in (
+        (extraction_text_key(job.tenant_id, job.case_id, extraction_id), "application/zstd"),
+        (extraction_manifest_key(job.tenant_id, job.case_id, extraction_id), "application/json"),
+    ):
+        artifact = Artifact(
+            id=services.ids.new_id(),
+            tenant_id=job.tenant_id,
+            case_id=job.case_id,
+            bucket=services.bucket,
+            key=key,
+            state=ArtifactState.UPLOADING,
+            sha256=None,
+            size=0,
+            mime=mime,
+            created_at=now,
+            expires_at=now + TEST_POLICY.retention.staging,
+            revision=0,
+        )
+        reserved.append(artifact)
+    await services.ledger.commit([Insert(artifact) for artifact in reserved])
+    return reserved[0].id, reserved[1].id
+
+
+async def extraction_result(services: Services, job: Job) -> ExtractionResult:
     text = "Aviso sintetico de prueba"
+    extraction_id = services.ids.new_id()
+    text_id, manifest_id = await reserved_derivatives(services, job, extraction_id)
+    digest = hashlib.sha256(text.encode()).hexdigest()
     return ExtractionResult(
-        extraction_id="extraction-under-test",
-        text_object=StoredObject(key="text", sha256="a" * 64, size=120),
-        manifest_object=StoredObject(key="manifest", sha256="b" * 64, size=80),
-        sha256=hashlib.sha256(text.encode()).hexdigest(),
+        extraction_id=extraction_id,
+        text_artifact_id=text_id,
+        manifest_artifact_id=manifest_id,
+        text_object=StoredObject(
+            key=extraction_text_key(job.tenant_id, job.case_id, extraction_id),
+            sha256="a" * 64,
+            size=120,
+        ),
+        manifest_object=StoredObject(
+            key=extraction_manifest_key(job.tenant_id, job.case_id, extraction_id),
+            sha256="b" * 64,
+            size=80,
+        ),
+        sha256=digest,
         page_count=1,
         ocr_pages=0,
-        chunks=(
-            ExtractedChunk(
-                page=1, position=0, text=text, sha256=hashlib.sha256(text.encode()).hexdigest()
-            ),
-        ),
+        chunks=(ExtractedChunk(page=1, position=0, text=text, sha256=digest),),
     )
 
 
@@ -626,9 +663,12 @@ async def test_extraction_closes_with_its_event_and_is_idempotent(
 ) -> None:
     """S02.9 el cierre de una extracción y su evento nacen en una transacción y una segunda confirmación no duplica nada."""
     submitted = await accepted_submission(services, tenant)
-    await claimed(services, submitted.job_id, 1, "worker-a")
+    working = await claimed(services, submitted.job_id, 1, "worker-a")
     completed = await complete_extraction(
-        services, job_id=submitted.job_id, attempt_number=1, result=extraction_result()
+        services,
+        job_id=submitted.job_id,
+        attempt_number=1,
+        result=await extraction_result(services, working.job),
     )
     assert not isinstance(completed, Skipped)
     assert completed.state is JobState.COMPLETED and completed.lease_until is None
@@ -648,7 +688,10 @@ async def test_extraction_closes_with_its_event_and_is_idempotent(
     assert [(c.page, c.position, c.text) for c in chunks] == [(1, 0, "Aviso sintetico de prueba")]
 
     again = await complete_extraction(
-        services, job_id=submitted.job_id, attempt_number=1, result=extraction_result()
+        services,
+        job_id=submitted.job_id,
+        attempt_number=1,
+        result=await extraction_result(services, working.job),
     )
     assert isinstance(again, Skipped)
     assert len(await services.ledger.outbox_of_job(submitted.job_id)) == len(entries)
@@ -1546,7 +1589,7 @@ async def test_entity_history_only_returns_aggregates(services: Services, tenant
         services,
         ToolCaller(agent=AgentName.MEMORY, tenant_id=stranger.id, case_id=other_case.id),
         kind=EntityKind.DOMAIN,
-        value=domain,
+        value=f"  {domain.upper()} ",
     )
     assert isinstance(history, EntityHistory)
     assert (history.cases, history.confirmed) == (2, True)
@@ -1576,26 +1619,7 @@ async def complete_document_job(services: Services, job_id: str) -> None:
         services, JobMessage(job_id=job_id, attempt=1), consumer=DOCUMENT_EXTRACTOR.durable
     )
     assert isinstance(claimed, ClaimedAttempt)
-    job = claimed.job
-    extraction_id = services.ids.new_id()
-    digest = hashlib.sha256(extraction_id.encode()).hexdigest()
-    result = ExtractionResult(
-        extraction_id=extraction_id,
-        text_object=StoredObject(
-            key=extraction_text_key(job.tenant_id, job.case_id, extraction_id),
-            sha256=digest,
-            size=16,
-        ),
-        manifest_object=StoredObject(
-            key=extraction_manifest_key(job.tenant_id, job.case_id, extraction_id),
-            sha256=digest,
-            size=16,
-        ),
-        sha256=digest,
-        page_count=1,
-        ocr_pages=0,
-        chunks=(ExtractedChunk(page=1, position=0, text="fragmento", sha256=digest),),
-    )
+    result = await extraction_result(services, claimed.job)
     done = await complete_extraction(services, job_id=job_id, attempt_number=1, result=result)
     assert not isinstance(done, Skipped)
 
@@ -2362,20 +2386,57 @@ async def staged_artifact(
     return artifact
 
 
+class UnavailableStore:
+    """Un almacén que no puede borrar: el barrido no debe dar por hecho el borrado."""
+
+    def __init__(self, inner: InMemoryObjectStore) -> None:
+        self._inner = inner
+
+    async def put(
+        self, key: str, content: AsyncIterable[bytes], *, size: int, mime: str
+    ) -> StoredObject:
+        return await self._inner.put(key, content, size=size, mime=mime)
+
+    async def read(self, key: str, *, limit: int) -> bytes | None:
+        return await self._inner.read(key, limit=limit)
+
+    async def stat(self, key: str) -> ObjectMetadata | None:
+        return await self._inner.stat(key)
+
+    async def delete(self, key: str) -> None:
+        raise ObjectStoreError(f"el almacén no responde para {key}")
+
+    def presigned_get(self, key: str, *, expires_in: timedelta) -> str:
+        return self._inner.presigned_get(key, expires_in=expires_in)
+
+
 async def test_janitor_sweeps_interrupted_uploads(
     services: Services, tenant: Tenant, clock: FakeClock, store: InMemoryObjectStore
 ) -> None:
     """S02.48 el janitor borra la subida interrumpida y su objeto al vencer el TTL."""
     case = await seed_case(services, tenant)
     stale = await staged_artifact(services, tenant, case, expires_in=timedelta(hours=1))
-    fresh = await staged_artifact(services, tenant, case, expires_in=timedelta(hours=12))
+    fresh = await staged_artifact(
+        services, tenant, case, expires_in=TEST_POLICY.retention.staging * 4
+    )
     submitted = await accepted_submission(services, tenant)
     document = await services.ledger.document(submitted.document_id)
     assert document is not None
+    abandoned = await claimed(services, submitted.job_id, 1, "worker-a")
+    reserved = await reserved_derivatives(services, abandoned.job, services.ids.new_id())
 
-    clock.advance(timedelta(hours=2))
+    clock.advance(TEST_POLICY.retention.staging + timedelta(hours=1))
+    unavailable = replace(services, object_store=UnavailableStore(store))
+    blocked = await sweep_staging(unavailable)
+    assert blocked.swept == () and blocked.removed == ()
+    assert set(blocked.skipped) == {stale.id, *reserved}
+    still_there = await services.ledger.artifact(stale.id)
+    assert still_there is not None and still_there.state is ArtifactState.UPLOADING
+    assert await store.stat(stale.key) is not None
+
     report = await sweep_staging(services)
-    assert report.swept == (stale.id,) and report.removed == (stale.key,)
+    assert set(report.swept) == {stale.id, *reserved}
+    assert stale.key in report.removed
 
     swept = await services.ledger.artifact(stale.id)
     assert swept is not None and swept.state is ArtifactState.DELETED
@@ -2386,6 +2447,10 @@ async def test_janitor_sweeps_interrupted_uploads(
     live = await services.ledger.artifact(document.artifact_id)
     assert live is not None and live.state is ArtifactState.AVAILABLE
     assert await store.stat(live.key) is not None
+    for artifact_id in reserved:
+        recovered = await services.ledger.artifact(artifact_id)
+        assert recovered is not None and recovered.state is ArtifactState.DELETED
+    assert (await services.ledger.job(submitted.job_id)) is not None
 
 
 async def test_retention_removes_expired_content_only(

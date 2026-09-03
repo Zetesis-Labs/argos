@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import cast
 
-from argos.core.analysis import DraftEntity, DraftSignal, Evidence
+from argos.core.analysis import DraftEntity, DraftSignal, Evidence, normalized_identifier
 from argos.core.model import Analysis, EntityKind, Strength
 from argos.core.ports import CaseBrief, ConversationBrief, Investigation, VerdictBrief
 
@@ -151,7 +151,7 @@ def _entity(item: dict[str, object]) -> DraftEntity | None:
     strength = _member(Strength, _text(item, "strength"))
     return DraftEntity(
         kind=kind,
-        value=value,
+        value=normalized_identifier(kind, value),
         strength=Strength.WEAK if kind is EntityKind.COMPANY else (strength or Strength.STRONG),
     )
 

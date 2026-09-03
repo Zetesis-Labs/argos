@@ -6,7 +6,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from argos.core.agents import AgentName, Capability, allows
-from argos.core.analysis import CaseAppearance, EntityHistory, aggregate_history
+from argos.core.analysis import (
+    CaseAppearance,
+    EntityHistory,
+    aggregate_history,
+    normalized_identifier,
+)
 from argos.core.model import CaseState, EntityKind, ExtractionState, JobState, JobType
 from argos.usecases.deps import Bookkeeping
 from argos.usecases.queries import VerdictSummary, summary_of
@@ -236,9 +241,10 @@ async def find_entity_history(
     """R29: al tenant solo le llegan agregados, nunca casos, citas ni tenants ajenos."""
     if not allows(caller.agent, Capability.FIND_ENTITY_HISTORY):
         return ToolDenied(NOT_AUTHORIZED)
-    entity = await services.ledger.entity_by_value(kind, value)
+    normalized = normalized_identifier(kind, value)
+    entity = await services.ledger.entity_by_value(kind, normalized)
     if entity is None:
-        return aggregate_history(kind, value, ())
+        return aggregate_history(kind, normalized, ())
     appearances: list[CaseAppearance] = []
     for link in await services.ledger.cases_of_entity(entity.id):
         case = await services.ledger.case(link.case_id)
