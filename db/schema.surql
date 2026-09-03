@@ -12,11 +12,24 @@ DEFINE NAMESPACE IF NOT EXISTS argos;
 USE NS argos;
 DEFINE DATABASE IF NOT EXISTS ops;
 USE DB ops;
-DEFINE USER OVERWRITE agent ON DATABASE PASSWORD '{{AGENT_PASSWORD}}' ROLES EDITOR
+-- Los agentes solo leen: sus escrituras entran por los casos de uso con la
+-- identidad del workload (S02 §7).
+DEFINE USER OVERWRITE agent ON DATABASE PASSWORD '{{AGENT_PASSWORD}}' ROLES VIEWER
     DURATION FOR TOKEN 12h, FOR SESSION 24h;
--- Identidad de desarrollo compartida por gateway, dispatcher, resumer, case
--- analyzer, worker y janitor. S02 §7 exige dividirla antes de producción.
-DEFINE USER OVERWRITE ledger ON DATABASE PASSWORD '{{LEDGER_PASSWORD}}' ROLES EDITOR
+-- La identidad compartida de desarrollo desaparece: cada workload tiene la suya
+-- y rotar o revocar una no afecta a las demás.
+REMOVE USER IF EXISTS ledger ON DATABASE;
+DEFINE USER OVERWRITE gateway ON DATABASE PASSWORD '{{GATEWAY_PASSWORD}}' ROLES EDITOR
+    DURATION FOR TOKEN 12h, FOR SESSION 24h;
+DEFINE USER OVERWRITE dispatcher ON DATABASE PASSWORD '{{DISPATCHER_PASSWORD}}' ROLES EDITOR
+    DURATION FOR TOKEN 12h, FOR SESSION 24h;
+DEFINE USER OVERWRITE resumer ON DATABASE PASSWORD '{{RESUMER_PASSWORD}}' ROLES EDITOR
+    DURATION FOR TOKEN 12h, FOR SESSION 24h;
+DEFINE USER OVERWRITE analyzer ON DATABASE PASSWORD '{{ANALYZER_PASSWORD}}' ROLES EDITOR
+    DURATION FOR TOKEN 12h, FOR SESSION 24h;
+DEFINE USER OVERWRITE worker ON DATABASE PASSWORD '{{WORKER_PASSWORD}}' ROLES EDITOR
+    DURATION FOR TOKEN 12h, FOR SESSION 24h;
+DEFINE USER OVERWRITE janitor ON DATABASE PASSWORD '{{JANITOR_PASSWORD}}' ROLES EDITOR
     DURATION FOR TOKEN 12h, FOR SESSION 24h;
 
 DEFINE TABLE IF NOT EXISTS schema_version SCHEMAFULL;
@@ -225,4 +238,4 @@ DEFINE FIELD IF NOT EXISTS revision ON verdict TYPE int;
 DEFINE INDEX IF NOT EXISTS verdict_case_version ON verdict FIELDS case_id, version UNIQUE;
 DEFINE INDEX IF NOT EXISTS verdict_case_state ON verdict FIELDS case_id, state;
 
-UPSERT schema_version:current SET version = 3;
+UPSERT schema_version:current SET version = 4;

@@ -1,7 +1,10 @@
 # S02 · AgentOS, clúster de agentes y workers
 
-**Estado**: en implementación. Los casos anclados están en el §16; los
-criterios del §15 que aún no tienen caso son trabajo pendiente.
+**Estado**: implementada. Los ocho pasos del §14 tienen código y casos anclados
+en el §16. Lo que S02 deja fuera a propósito está en el §1 y en las notas de
+alcance de cada sección: fuentes oficiales (W3), revisión del curador (W4),
+cálculo de riesgo con señales reales y mínimo privilegio por tabla en
+SurrealDB.
 
 Esta vertical convierte la base S01 en un AgentOS capaz de coordinar agentes
 especialistas y trabajos asíncronos. Cubre W1, W2 y W5; R1, R8, R9, R12,
@@ -216,10 +219,17 @@ impide reanudarlo.
   leer sesiones ni revisar casos.
 - Los agentes no reciben claves de RustFS. Gateway y worker usan credenciales
   distintas o URLs firmadas breves con operación, objeto y caducidad acotados.
-- El usuario genérico `agent` de S01 es una facilidad de desarrollo y debe
-  dividirse antes de un despliegue productivo de S02.
-- Identidades de producción: gateway, dispatcher, resumer, case analyzer,
-  worker, janitor y cada clase de agente con permisos distintos.
+- Cada workload tiene su propio usuario de base de datos con su contraseña:
+  gateway, dispatcher, resumer, analyzer, worker y janitor. Ninguno comparte
+  credencial, así que una rotación o una revocación afecta a uno solo y la
+  auditoría distingue quién escribió.
+- El usuario `agent` que usan los agentes por MCP es de solo lectura. Las
+  escrituras entran por los casos de uso con la identidad del workload.
+- Un usuario de base de datos de SurrealDB tiene rol, no permisos por tabla:
+  separar identidades da rotación y auditoría independientes, no mínimo
+  privilegio por tabla. Restringir tabla a tabla exige acceso por registro y
+  queda fuera de S02; hasta entonces la frontera real de los agentes es el
+  conjunto de herramientas MCP, no el rol.
 
 ## 8. Contrato NATS JetStream
 
@@ -498,8 +508,7 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
 - Cuando `bootstrap-db` se ejecuta dos veces seguidas
 - Entonces `argos/ops` contiene las tablas `tenant`, `case`, `artifact`,
   `document`, `job`, `attempt`, `outbox_entry`, `extraction` y `chunk`, todas
-  `SCHEMAFULL`, el usuario `ledger` que usan gateway, dispatcher y worker en
-  desarrollo, y `schema_version:current` tiene la versión que declara
+  `SCHEMAFULL`, y `schema_version:current` tiene la versión que declara
   `bootstrap-db` (constitución §7, §14; R21, R22)
 
 ## S02.2 Enviar un PDF válido responde antes de extraer y deja documento, trabajo y outbox consistentes
@@ -936,3 +945,72 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
 - Cuando se le envía un documento nuevo
 - Entonces se crea otro caso que apunta al anterior, el documento y su trabajo
   pertenecen al caso nuevo y el veredicto del anterior no cambia (R12)
+
+## S02.47 Cada workload tiene su identidad y la de los agentes es de solo lectura
+
+- Dado el esquema aplicado dos veces
+- Cuando cada workload inicia sesión con su usuario y el usuario `agent`
+  intenta escribir en `argos/ops`
+- Entonces existen los usuarios `gateway`, `dispatcher`, `resumer`, `analyzer`,
+  `worker` y `janitor`, cada uno entra solo con su contraseña y ninguno con la
+  de otro; el usuario compartido `ledger` ya no existe; y `agent` lee pero no
+  escribe: su `CREATE` no deja fila y su intento de definir un usuario se
+  rechaza por permisos (constitución §6, §7; R16; S02 §7)
+
+Un usuario `VIEWER` de SurrealDB no rechaza una escritura de datos: la ejecuta
+sin efecto y responde `OK` con resultado vacío. Solo el DDL da error explícito.
+Por eso la comprobación mira la fila, no el código de respuesta.
+
+## S02.48 El janitor borra la subida interrumpida y su objeto al vencer el TTL
+
+- Dado un artefacto `uploading` con su objeto en el almacén, otro `uploading`
+  todavía vigente y uno `available` referenciado por un documento
+- Cuando el janitor barre el staging pasada la caducidad del primero
+- Entonces el primero queda `deleted` sin objeto en el almacén, los otros dos
+  siguen intactos, y ningún trabajo se vio afectado (W5.1; R18; S02 §9, §12)
+
+## S02.49 La retención borra el contenido caducado sin dañar el caso
+
+- Dado un caso con veredicto cuyo documento, extracción, fragmentos y objetos
+  han caducado, y otro caso vigente con los suyos
+- Cuando el janitor aplica la retención
+- Entonces del caso caducado desaparecen los fragmentos y los objetos, su
+  extracción queda `expired`, su documento `expired` y su artefacto `deleted`;
+  el caso, sus señales y su veredicto siguen intactos; el caso vigente no se
+  toca; y repetir la pasada no vuelve a borrar nada (R8, R18; constitución §6,
+  §10; S02 §12)
+
+## S02.50 El almacén supera el ensayo de escritura, verificación, borrado y restauración
+
+- Dado el almacén real recién arrancado
+- Cuando se ejecuta el ensayo con un contenido sintético
+- Entonces escribe el objeto y su hash coincide con el del contenido, la lectura
+  devuelve los mismos bytes, el borrado lo deja inexistente, la restauración lo
+  vuelve a dejar legible con el mismo hash y el informe declara superados los
+  cinco pasos (constitución §10; S02 §15)
+
+## S02.51 El error público no filtra claves, SQL ni texto del documento
+
+- Dado un fallo interno cuyo detalle contiene una clave de objeto, una consulta
+  SurrealQL y un fragmento del documento
+- Cuando el trabajo lo registra y el cliente consulta su estado
+- Entonces el error público es un código estable del catálogo, el interno queda
+  en el libro para el curador y la respuesta pública no contiene la clave, la
+  consulta ni el texto (R28; constitución §12)
+
+## S02.52 La traza correlaciona la cadena sin contenido sensible
+
+- Dado un documento que se ingresa, se extrae y se analiza
+- Cuando se recogen los spans de la cadena
+- Entonces todos comparten la misma correlación y llevan tenant, caso, trabajo,
+  intento y tamaños; ninguno lleva el texto del fragmento, la clave del objeto
+  ni una consulta (constitución §11; S02 §13)
+
+## S02.53 Las métricas mínimas salen del libro y solo las ve el curador
+
+- Dado trabajos en varios estados, outbox pendiente y casos esperando documento
+- Cuando el curador pide las métricas y un servicio también
+- Entonces el curador recibe el recuento por tipo y estado, la antigüedad del
+  trabajo en cola más viejo, el outbox pendiente y los casos esperando; el
+  servicio recibe 403 y las métricas no contienen identificadores de caso ni
+  contenido (S02 §13; R16)
