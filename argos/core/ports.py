@@ -155,3 +155,42 @@ class Delivery(Protocol):
 
 class MessageSource(Protocol):
     async def fetch(self, *, limit: int, timeout: float) -> Sequence[Delivery]: ...
+
+
+class PdfError(Exception):
+    """Fallo permanente del documento: el reintento no lo arregla (R19)."""
+
+    code: str = "pdf.unreadable"
+
+
+class PdfDamagedError(PdfError):
+    code = "pdf.damaged"
+
+
+class PdfEncryptedError(PdfError):
+    code = "pdf.encrypted"
+
+
+class PdfTooManyPagesError(PdfError):
+    code = "pdf.too_many_pages"
+
+
+class OpenPdf(Protocol):
+    """Un documento abierto una sola vez: el texto y la imagen de cada página."""
+
+    @property
+    def page_count(self) -> int: ...
+
+    def text_of(self, number: int) -> str: ...
+
+    def image_of(self, number: int, *, scale: float) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class PdfReader(Protocol):
+    def open(self, data: bytes) -> OpenPdf: ...
+
+
+class PageOcr(Protocol):
+    def text_of(self, image: bytes, *, language: str) -> str: ...
