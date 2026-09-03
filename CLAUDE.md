@@ -25,6 +25,7 @@ docker exec argos-app-1 uv sync
 docker exec argos-app-1 uv run bootstrap-db
 docker exec argos-app-1 uv run bootstrap-bus
 docker exec argos-app-1 uv run bootstrap-store
+docker exec argos-app-1 uv run gateway   # sirve las capacidades en :7777
 docker exec argos-app-1 uv run pytest
 docker exec argos-app-1 uv run spec-check
 docker exec argos-app-1 uv run ruff check .
@@ -57,6 +58,7 @@ artefactos a RustFS.
 | `argos/tools/` | Adaptadores externos y fakes |
 | `argos/agents/` | Especialistas, `investigation_team`, redactor y sus herramientas acotadas; sin reglas de negocio |
 | `argos/platform/` | SurrealDB (HTTP y libro de trabajos), MCP, Agno DB, LiteLLM, trazas, reloj e ids |
+| `argos/api/` | Gateway HTTP y tarjeta A2A sobre AgentOS; sin `Any`, así que sin modelos de pydantic |
 | `argos/services/` | Procesos de larga vida: `dispatcher`, `worker`, `resumer` y `analyzer` |
 | `argos/devtools/` | `bootstrap-db`, `bootstrap-bus`, `bootstrap-store` y `spec-check` |
 | `tests/` | Tests unitarios y un fichero por spec técnica activa |

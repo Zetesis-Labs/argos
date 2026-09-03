@@ -14,9 +14,9 @@ un núcleo determinista valida señales, calcula el nivel y gobierna los estados
   `agno/sessions` y `argos/ops`, LiteLLM, Langfuse, devcontainer y anclaje de
   specs a tests.
 - **S02 en implementación**: el libro de trabajos, el outbox, NATS JetStream,
-  RustFS, el worker de documentos, el clúster de agentes con sus herramientas
-  acotadas y el workflow de veredicto ya tienen caso y test; quedan el gateway
-  API/A2A, el janitor y el endurecimiento de credenciales.
+  RustFS, el worker de documentos, el clúster de agentes, el workflow de
+  veredicto y el gateway con sus capacidades ya tienen caso y test; quedan la
+  observabilidad enmascarada, el janitor y el endurecimiento de credenciales.
 - Las verticales del análisis real —identificadores, dominio, puntuación,
   veredicto, fuentes y memoria— siguen el orden de `specs/README.md`.
 
@@ -74,6 +74,27 @@ reanudar aunque desaparezca quien inició el trabajo.
 | `investigation_team` | Coordinar especialistas de análisis |
 | `verdict_workflow` | Controlar estados, tiempo, degradación y cierre |
 
+## Capacidades del gateway
+
+| Capacidad | Ruta | Quién |
+|---|---|---|
+| `analyze_notice` | `POST /v1/notices` | servicio |
+| `submit_document` | `POST /v1/documents` | servicio |
+| `get_job` | `GET /v1/jobs/{job_id}` | servicio |
+| `get_case` | `GET /v1/cases/{case_id}` | servicio |
+| `ask_case` | `POST /v1/cases/{case_id}/questions` | servicio |
+| `reprocess_document` | `POST /v1/documents/{document_id}/reprocess` | curador |
+
+El tenant sale siempre de la credencial, nunca del cuerpo. La tarjeta de agente
+está en `/.well-known/agent-card.json` y declara como habilidades esas
+capacidades; las de texto se atienden además por JSON-RPC en
+`POST /v1/a2a/messages`. Los especialistas y los workers no se publican: no
+tienen tarjeta ni endpoint, y el plano de control de AgentOS es del curador.
+
+`analyze_notice` espera el estado terminal hasta el presupuesto de R15 y, si no
+llega, responde `202` con el caso en curso: el análisis es un trabajo durable y
+sobrevive al proceso que atendió la llamada.
+
 ## Procesamiento de PDF
 
 1. El gateway valida y guarda el original privado en RustFS.
@@ -117,7 +138,7 @@ No se ejecutan tests, lint, tipos ni builds desde el host.
 
 | Servicio disponible en S01 | URL en el host |
 |---|---|
-| AgentOS | `http://localhost:7777` (puerto reservado; servidor pendiente de S02) |
+| AgentOS | `http://localhost:7777` (gateway: capacidades, tarjeta y plano de control) |
 | LiteLLM | `http://localhost:4100` |
 | Langfuse | `http://localhost:3200` |
 | SurrealDB | `http://localhost:8100` (MCP en `/mcp`) |
