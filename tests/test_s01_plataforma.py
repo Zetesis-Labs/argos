@@ -1,9 +1,6 @@
-import asyncio
 import re
-import time
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
 from uuid import uuid4
 
 import httpx
@@ -24,6 +21,7 @@ from argos.platform.mcp import (
     run_query,
 )
 from argos.platform.surreal import JsonValue, SurrealError, SurrealHttp
+from tests.support import names_in, wait_for_observations
 
 pytestmark = pytest.mark.anyio
 
@@ -66,10 +64,6 @@ async def info_for_db(settings: Settings, ns: str, db: str) -> dict[str, JsonVal
     result = statements[-1].result
     assert isinstance(result, dict)
     return result
-
-
-def names_in(section: JsonValue | None) -> set[str]:
-    return set(section.keys()) if isinstance(section, dict) else set()
 
 
 async def test_schema_bootstrap_is_idempotent(settings: Settings) -> None:
@@ -221,38 +215,6 @@ async def test_minimal_agent_leaves_trace_in_langfuse(
     ]
     assert with_user, "Langfuse no recibió el identificador de usuario"
     assert all(u == user_id for u in with_user), with_user
-
-
-async def wait_for_observations(
-    settings: Settings, *, trace_id: str, timeout_seconds: float
-) -> list[dict[str, JsonValue]]:
-    auth = (settings.langfuse_public_key, settings.langfuse_secret_key.get_secret_value())
-    deadline = time.monotonic() + timeout_seconds
-    async with httpx.AsyncClient(timeout=15, auth=auth) as client:
-        while time.monotonic() < deadline:
-            response = await client.get(
-                f"{settings.langfuse_host}/api/public/v2/observations",
-                params={"traceId": trace_id, "limit": 100},
-            )
-            if response.status_code == 200:
-                observations = parse_observations(cast(object, response.json()))
-                if observations:
-                    return observations
-            await asyncio.sleep(2)
-    return []
-
-
-def parse_observations(payload: object) -> list[dict[str, JsonValue]]:
-    if not isinstance(payload, dict):
-        return []
-    data = cast(dict[str, object], payload).get("data")
-    if not isinstance(data, list):
-        return []
-    observations: list[dict[str, JsonValue]] = []
-    for item in cast(list[object], data):
-        if isinstance(item, dict):
-            observations.append(cast(dict[str, JsonValue], item))
-    return observations
 
 
 async def test_agno_sessions_live_only_in_agno_database(settings: Settings) -> None:
