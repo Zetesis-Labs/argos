@@ -81,6 +81,8 @@ GATEWAY_CAPABILITIES = (
 HEALTH_PATH = "/health"
 CARD_PATH = "/.well-known/agent-card.json"
 MESSAGES_PATH = "/v1/a2a/messages"
+# Fuera de /v1 a propósito: el guardián deja este plano al curador (S02 §13).
+METRICS_PATH = "/metrics"
 
 
 def capability(name: CapabilityName) -> CapabilitySpec:

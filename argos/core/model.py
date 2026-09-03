@@ -392,6 +392,15 @@ def table_name(record: LedgerRecord) -> str:
 
 
 @dataclass(frozen=True)
+class JobCount:
+    """Proyección del libro para métricas (S02 §13), no una fila."""
+
+    type: JobType
+    state: JobState
+    count: int
+
+
+@dataclass(frozen=True)
 class Insert:
     record: LedgerRecord
 
@@ -403,7 +412,14 @@ class Update:
     record: LedgerRecord
 
 
-LedgerOp = Insert | Update
+@dataclass(frozen=True)
+class Delete:
+    """Solo para lo que guarda contenido: el resto caduca en su sitio como evidencia."""
+
+    record: LedgerRecord
+
+
+LedgerOp = Insert | Update | Delete
 
 
 def attempt_id(job_id: str, number: int) -> str:
