@@ -29,6 +29,9 @@ from argos.core.ports import (
     BusUnavailableError,
     Delivery,
     LedgerConflictError,
+    ObjectMetadata,
+    ObjectSizeMismatchError,
+    ObjectTooLargeError,
     OutboundMessage,
     StoredObject,
 )
@@ -230,26 +233,44 @@ class InMemoryLedger:
 
 
 class InMemoryObjectStore:
-    def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {}
+    """Exige el mismo tamaño declarado y la misma lectura acotada que RustFS."""
 
-    async def put(self, key: str, content: AsyncIterable[bytes]) -> StoredObject:
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str]] = {}
+
+    async def put(
+        self, key: str, content: AsyncIterable[bytes], *, size: int, mime: str
+    ) -> StoredObject:
         digest = hashlib.sha256()
         buffer = bytearray()
         async for chunk in content:
             digest.update(chunk)
             buffer.extend(chunk)
-        self.objects[key] = bytes(buffer)
+        if len(buffer) != size:
+            raise ObjectSizeMismatchError(f"declared {size} bytes but streamed {len(buffer)}")
+        self.objects[key] = (bytes(buffer), mime)
         return StoredObject(key=key, sha256=digest.hexdigest(), size=len(buffer))
 
-    async def stat(self, key: str) -> StoredObject | None:
-        data = self.objects.get(key)
-        if data is None:
+    async def read(self, key: str, *, limit: int) -> bytes | None:
+        stored = self.objects.get(key)
+        if stored is None:
             return None
-        return StoredObject(key=key, sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+        if len(stored[0]) > limit:
+            raise ObjectTooLargeError(f"{key} exceeds {limit} bytes")
+        return stored[0]
+
+    async def stat(self, key: str) -> ObjectMetadata | None:
+        stored = self.objects.get(key)
+        if stored is None:
+            return None
+        return ObjectMetadata(key=key, size=len(stored[0]), mime=stored[1])
 
     async def delete(self, key: str) -> None:
         self.objects.pop(key, None)
+
+    def presigned_get(self, key: str, *, expires_in: timedelta) -> str:
+        expiry = int(expires_in.total_seconds())
+        return f"memory://{key}?expires_in={expiry}"
 
 
 @dataclass
