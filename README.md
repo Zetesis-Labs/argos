@@ -13,8 +13,10 @@ un núcleo determinista valida señales, calcula el nivel y gobierna los estados
 - **S01 implementada y verificada**: SurrealDB 3 con MCP, separación
   `agno/sessions` y `argos/ops`, LiteLLM, Langfuse, devcontainer y anclaje de
   specs a tests.
-- **S02 especificada, aún no implementada**: AgentOS, clúster de especialistas,
-  A2A, NATS JetStream, RustFS y worker de documentos.
+- **S02 en implementación**: el libro de trabajos, el outbox, NATS JetStream,
+  RustFS, el worker de documentos, el clúster de agentes con sus herramientas
+  acotadas y el workflow de veredicto ya tienen caso y test; quedan el gateway
+  API/A2A, el janitor y el endurecimiento de credenciales.
 - Las verticales del análisis real —identificadores, dominio, puntuación,
   veredicto, fuentes y memoria— siguen el orden de `specs/README.md`.
 
@@ -81,7 +83,11 @@ reanudar aunque desaparezca quien inició el trabajo.
    outbox en una misma transacción.
 5. El dispatcher publica el evento con referencias; el resumer crea el trabajo
    de análisis del caso y el workflow relee SurrealDB y reanuda.
-6. El agente obtiene únicamente chunks autorizados mediante MCP.
+6. El analizador reclama ese trabajo, pasa el caso a `analyzing` y ejecuta el
+   equipo de investigación; el agente obtiene únicamente fragmentos autorizados
+   y acotados por presupuesto.
+7. El núcleo calcula el nivel, el redactor lo explica sin poder cambiarlo y el
+   caso cierra con su veredicto versionado y su evento en el outbox.
 
 La entrega es al menos una vez y el efecto es idempotente por documento,
 versión de extractor y opciones; un documento se identifica dentro de su caso

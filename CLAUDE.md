@@ -52,12 +52,12 @@ artefactos a RustFS.
 | `specs/S01-plataforma.md` | Base implementada y casos anclados |
 | `specs/S02-agentos-workers.md` | Arquitectura aprobada del clúster, NATS, RustFS y PDFs |
 | `db/schema.surql` | Esquema SurrealDB idempotente; lo aplica `bootstrap-db` |
-| `argos/core/` | Funciones puras: modelo, puertos, planes del libro de trabajos, señales, puntuación y veredicto; sin I/O |
+| `argos/core/` | Funciones puras: modelo, puertos, planes del libro, catálogo de agentes, señales, puntuación y veredicto; sin I/O |
 | `argos/usecases/` | Casos de uso: orquestan puertos con las decisiones del núcleo |
 | `argos/tools/` | Adaptadores externos y fakes |
-| `argos/agents/` | Agentes, Team y Workflow; sin reglas de negocio |
+| `argos/agents/` | Especialistas, `investigation_team`, redactor y sus herramientas acotadas; sin reglas de negocio |
 | `argos/platform/` | SurrealDB (HTTP y libro de trabajos), MCP, Agno DB, LiteLLM, trazas, reloj e ids |
-| `argos/services/` | Procesos de larga vida: `dispatcher` y `worker` |
+| `argos/services/` | Procesos de larga vida: `dispatcher`, `worker`, `resumer` y `analyzer` |
 | `argos/devtools/` | `bootstrap-db`, `bootstrap-bus`, `bootstrap-store` y `spec-check` |
 | `tests/` | Tests unitarios y un fichero por spec técnica activa |
 | `.devcontainer/` | Compose de desarrollo |
