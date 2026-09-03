@@ -117,6 +117,18 @@ usa entre despliegues AgentOS o por clientes remotos. Cada petición remota llev
 identidad de servicio y correlación; el gateway deriva el tenant y no acepta un
 `tenant_id` confiando únicamente en el cuerpo.
 
+La frontera remota se publica como una tarjeta de agente del gateway cuyas
+habilidades son exactamente esas capacidades, servida por el propio AgentOS. No
+se usa la interfaz A2A de Agno porque publica agentes y equipos: expondría a los
+especialistas, que no tienen entrada pública. Argos sirve la tarjeta y el envío
+de mensajes por sí mismo, sin LLM en el camino: la capacidad la resuelve código
+determinista.
+
+Las identidades son de servicio (atadas a un tenant) o de curador (operan el
+despliegue completo y son las únicas que reprocesan). El token viaja en
+`Authorization: Bearer` y se resuelve contra el registro de identidades; un
+token desconocido o ausente no llega a tocar datos.
+
 Los agentes especialistas y workers no publican Agent Card ni endpoint A2A. Un
 trabajo largo finaliza la llamada de envío tras su aceptación. El cliente usa
 `get_job`, `get_case` o una notificación referenciada.
@@ -845,3 +857,82 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
   con nivel `undetermined` y acciones; ninguna fila de `agno/sessions` contiene
   ese texto; y ninguna observación de Langfuse de esa traza lo contiene
   (constitución §4, §11; R5, R8)
+
+## S02.38 El gateway deriva el tenant de la identidad y nunca del cuerpo
+
+- Dado un token de servicio de un tenant, uno de curador y ninguno
+- Cuando se piden capacidades con cada uno y se envía además un cuerpo que
+  declara un tenant distinto del de la credencial
+- Entonces sin credencial y con una desconocida la respuesta es 401 sin tocar
+  datos; el token de servicio opera siempre sobre su tenant e ignora el del
+  cuerpo; el de curador no está atado a un tenant y es el único que puede
+  reprocesar (R16; constitución §6; S02 §5)
+
+## S02.39 AgentOS publica capacidades y no descubre especialistas ni workers
+
+- Dado la aplicación del gateway montada sobre AgentOS
+- Cuando se listan sus rutas y se pide la tarjeta de agente
+- Entonces las rutas de negocio son exactamente las seis capacidades del §5 más
+  salud y tarjeta; ninguna ruta ni la tarjeta nombran a un especialista, al
+  equipo, al workflow ni a un worker; y la tarjeta declara como habilidades esas
+  capacidades (constitución §8; S02 §5)
+
+## S02.40 analyze_notice devuelve el veredicto dentro del presupuesto y el caso sobrevive al proceso
+
+- Dado un aviso breve válido
+- Cuando se envía con un analizador que responde y después con uno que no llega
+  a tiempo
+- Entonces el primero devuelve caso y veredicto dentro del presupuesto; el
+  segundo devuelve el caso aceptado y en curso al agotarlo, sin error; en ambos
+  casos el trabajo `case.analyze` existe desde la primera transacción y
+  `get_case` devuelve el estado final cuando el analizador termina (W1.3, R12,
+  R15, R25)
+
+## S02.41 Enviar un documento por la API responde antes de extraer
+
+- Dado un PDF sintético enviado como formulario
+- Cuando el cliente lo sube y después sube un fichero que no es PDF
+- Entonces el primero responde con caso, documento y trabajo `queued` sin haber
+  extraído, el objeto está en el almacén y `get_job` devuelve su estado público;
+  el segundo se rechaza con `document.not_pdf` y no deja trabajo (W5.1-3, R19)
+
+## S02.42 La API no deja ver el caso de otro tenant
+
+- Dado un caso con documento y trabajo de un tenant
+- Cuando otro tenant consulta el trabajo, el caso y hace una pregunta sobre él
+- Entonces las tres respuestas son 404 y ninguna revela si el recurso existe
+  (R16, R28)
+
+## S02.43 ask_case responde con la evidencia persistida y no muta el veredicto
+
+- Dado un caso con veredicto emitido y sus señales
+- Cuando un actor autorizado pregunta por él
+- Entonces recibe una respuesta apoyada en el veredicto, el veredicto sigue en
+  su versión y nivel, no se crean señales nuevas y un caso sin veredicto
+  responde que todavía no lo hay (W2, R8)
+
+## S02.44 Reprocesar es del curador, conserva la extracción y supera el veredicto
+
+- Dado un caso `partial` con su extracción disponible y su veredicto vigente
+- Cuando un servicio pide reprocesar el documento y después lo pide el curador
+- Entonces el servicio recibe 403 y nada cambia; el curador obtiene un trabajo
+  nuevo vinculado al anterior con opciones distintas, el caso vuelve a
+  `awaiting_processing`, la extracción anterior sigue `available` y el veredicto
+  anterior queda como versión superada cuando el nuevo análisis cierra (R12,
+  R25; S02 §11)
+
+## S02.45 Un analizador que muere con el intento abierto no duplica el veredicto
+
+- Dado un trabajo `case.analyze` reclamado cuyo proceso no lo cierra
+- Cuando vence el arrendamiento, el dispatcher lo recupera y otro analizador
+  reclama el intento siguiente y termina
+- Entonces el intento perdido queda `lost`, el caso termina en un estado
+  terminal con un único veredicto de versión 1 y un único evento
+  `argos.events.case.completed.v1` (R21, R25; S02 §8)
+
+## S02.46 Un documento enviado a un caso con veredicto crea un caso vinculado
+
+- Dado un caso con veredicto emitido
+- Cuando se le envía un documento nuevo
+- Entonces se crea otro caso que apunta al anterior, el documento y su trabajo
+  pertenecen al caso nuevo y el veredicto del anterior no cambia (R12)
