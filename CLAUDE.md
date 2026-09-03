@@ -24,6 +24,7 @@ docker compose -f .devcontainer/docker-compose.yml up -d --build
 docker exec argos-app-1 uv sync
 docker exec argos-app-1 uv run bootstrap-db
 docker exec argos-app-1 uv run bootstrap-bus
+docker exec argos-app-1 uv run bootstrap-store
 docker exec argos-app-1 uv run pytest
 docker exec argos-app-1 uv run spec-check
 docker exec argos-app-1 uv run ruff check .
@@ -34,12 +35,13 @@ docker exec argos-app-1 uv run pyright
 Nunca ejecutar tests, lint, tipos o build desde el host.
 
 Servicios: puerto AgentOS reservado `:7777`, LiteLLM `:4100`, Langfuse
-`:3200`, SurrealDB `:8100`, Surrealist `:8200`, NATS `:4300` y su monitor
-`:8300`. Los puertos se configuran en `.env` y se publican solo en loopback.
+`:3200`, SurrealDB `:8100`, Surrealist `:8200`, NATS `:4300` con monitor
+`:8300` y RustFS `:9390` con consola `:9391`. Los puertos se configuran en
+`.env` y se publican solo en loopback.
 
 El MinIO y Redis del compose son dependencias internas de Langfuse. No son
 infraestructura de aplicación de Argos: los trabajos van por NATS y los
-artefactos irán a RustFS.
+artefactos a RustFS.
 
 ## Dónde vive cada cosa
 
@@ -56,7 +58,7 @@ artefactos irán a RustFS.
 | `argos/agents/` | Agentes, Team y Workflow; sin reglas de negocio |
 | `argos/platform/` | SurrealDB (HTTP y libro de trabajos), MCP, Agno DB, LiteLLM, trazas, reloj e ids |
 | `argos/services/` | Procesos de larga vida: bucle del `dispatcher` |
-| `argos/devtools/` | `bootstrap-db`, `bootstrap-bus` y `spec-check` |
+| `argos/devtools/` | `bootstrap-db`, `bootstrap-bus`, `bootstrap-store` y `spec-check` |
 | `tests/` | Tests unitarios y un fichero por spec técnica activa |
 | `.devcontainer/` | Compose de desarrollo |
 

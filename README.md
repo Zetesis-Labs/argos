@@ -43,8 +43,9 @@ API / A2A → AgentOS gateway → workflow + equipo de agentes
   memoria operacional.
 - **NATS JetStream** entrega comandos y eventos por referencia. Los mensajes
   llevan `job_id` e `attempt`; no transportan PDFs, texto completo ni resultados.
-- **RustFS** guarda artefactos privados S3-compatible. El código dependerá de un
-  puerto neutral `S3ObjectStore`.
+- **RustFS** guarda artefactos privados S3-compatible. El código depende del
+  puerto neutral `S3ObjectStore`, que escribe en flujo calculando el hash, lee
+  de forma acotada y firma URLs breves.
 - **Workers stateless** ejecutan tareas pesadas como extracción y OCR de PDF. No
   son agentes, no se exponen por A2A y no toman decisiones de riesgo.
 - **LiteLLM** es la única pasarela a modelos y **Langfuse** recibe trazas sin
@@ -96,6 +97,7 @@ docker compose -f .devcontainer/docker-compose.yml up -d --build
 docker exec argos-app-1 uv sync
 docker exec argos-app-1 uv run bootstrap-db
 docker exec argos-app-1 uv run bootstrap-bus
+docker exec argos-app-1 uv run bootstrap-store
 docker exec argos-app-1 uv run pytest
 docker exec argos-app-1 uv run spec-check
 docker exec argos-app-1 uv run ruff check .
@@ -113,10 +115,11 @@ No se ejecutan tests, lint, tipos ni builds desde el host.
 | SurrealDB | `http://localhost:8100` (MCP en `/mcp`) |
 | Surrealist | `http://localhost:8200` |
 | NATS JetStream | `nats://localhost:4300` (monitor en `http://localhost:8300`) |
+| RustFS | `http://localhost:9390` (consola en `http://localhost:9391`) |
 
 El compose incluye Redis y un almacén MinIO exclusivamente como dependencias
 internas de Langfuse. El código de Argos no los usa como cola ni como almacén
-de artefactos: la cola es NATS JetStream y el almacén será RustFS.
+de artefactos: la cola es NATS JetStream y el almacén es RustFS.
 
 ## Documentación
 
