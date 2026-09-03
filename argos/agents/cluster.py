@@ -18,8 +18,10 @@ from argos.agents.tools import tools_for
 from argos.config import Settings
 from argos.core.agents import INVESTIGATION_TEAM, AgentName
 from argos.core.model import Analysis
-from argos.core.ports import CaseBrief, Investigation, VerdictBrief
+from argos.core.ports import CaseBrief, ConversationBrief, Investigation, VerdictBrief
 from argos.core.reports import (
+    conversation_prompt,
+    fallback_answer,
     fallback_summary,
     investigation_prompt,
     parse_investigation,
@@ -141,6 +143,50 @@ def build_writer(*, model: OpenAIChat, db: BaseDb | None) -> Agent:
         db=db,
         store_tool_messages=False,
         telemetry=False,
+    )
+
+
+def build_conversation(
+    *, model: OpenAIChat, services: Bookkeeping, tenant_id: str, case_id: str, db: BaseDb | None
+) -> Agent:
+    return build_specialist(
+        AgentName.CONVERSATION,
+        model=model,
+        services=services,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        db=db,
+    )
+
+
+class AgentAdvisor:
+    def __init__(self, agent: Agent, *, user_id: str) -> None:
+        self._agent = agent
+        self._user_id = user_id
+
+    async def answer(self, brief: ConversationBrief) -> str:
+        answered = await run_text(
+            self._agent,
+            conversation_prompt(brief),
+            user_id=self._user_id,
+            session_id=f"case-{brief.case_id}",
+        )
+        return answered.strip() or fallback_answer(brief)
+
+
+def build_advisor(
+    model: OpenAIChat,
+    *,
+    services: Bookkeeping,
+    tenant_id: str,
+    case_id: str,
+    db: BaseDb | None = None,
+) -> AgentAdvisor:
+    return AgentAdvisor(
+        build_conversation(
+            model=model, services=services, tenant_id=tenant_id, case_id=case_id, db=db
+        ),
+        user_id=tenant_id,
     )
 
 
