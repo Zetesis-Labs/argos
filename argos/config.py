@@ -51,7 +51,21 @@ class Settings:
     surreal_ledger_password: SecretValue = field(
         default_factory=lambda: environment_secret("SURREAL_LEDGER_PASSWORD", "ledger-dev-password")
     )
+    artifact_endpoint: str = field(
+        default_factory=lambda: environment("ARTIFACT_ENDPOINT", "http://rustfs:9000")
+    )
     artifact_bucket: str = field(default_factory=lambda: environment("ARTIFACT_BUCKET", "argos"))
+    artifact_region: str = field(
+        default_factory=lambda: environment("ARTIFACT_REGION", "us-east-1")
+    )
+    artifact_access_key: str = field(
+        default_factory=lambda: environment("RUSTFS_ACCESS_KEY", "argos-artifacts")
+    )
+    artifact_secret_key: SecretValue = field(
+        default_factory=lambda: environment_secret(
+            "RUSTFS_SECRET_KEY", "argos-artifacts-dev-secret"
+        )
+    )
 
     nats_url: str = field(default_factory=lambda: environment("NATS_URL", "nats://nats:4222"))
     ops_namespace: str = field(default_factory=lambda: environment("OPS_NAMESPACE", "argos"))

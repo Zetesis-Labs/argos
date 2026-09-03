@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 bootstrap-db = "argos.devtools.bootstrap_db:main"
 bootstrap-bus = "argos.devtools.bootstrap_bus:main"
+bootstrap-store = "argos.devtools.bootstrap_store:main"
 dispatcher = "argos.services.dispatcher:main"
 spec-check = "argos.devtools.spec_check:main"
 
