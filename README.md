@@ -63,7 +63,7 @@ reanudar aunque desaparezca quien inició el trabajo.
 | `domain_agent` | Analizar registro, certificado y reputación de dominios |
 | `patterns_agent` | Detectar patrones de manipulación con citas |
 | `memory_agent` | Encontrar entidades y casos previos |
-| `document_agent` | Solicitar y consultar trabajos documentales |
+| `document_agent` | Consultar trabajos, manifiestos y fragmentos autorizados; no crea ni reprocesa trabajos |
 | `verdict_writer` | Explicar un nivel calculado por código |
 | `conversation_agent` | Responder sobre un caso sin mutar su veredicto |
 | `investigation_team` | Coordinar especialistas de análisis |
@@ -76,13 +76,15 @@ reanudar aunque desaparezca quien inició el trabajo.
 3. El dispatcher publica `argos.jobs.document.extract.v1` en NATS.
 4. El worker relee el trabajo, extrae texto/OCR y confirma derivados y evento de
    outbox en una misma transacción.
-5. El dispatcher publica el evento con referencias; el workflow relee SurrealDB
-   y reanuda.
+5. El dispatcher publica el evento con referencias; el resumer crea el trabajo
+   de análisis del caso y el workflow relee SurrealDB y reanuda.
 6. El agente obtiene únicamente chunks autorizados mediante MCP.
 
-La entrega es al menos una vez y el efecto es idempotente por tenant, hash,
-versión de extractor y opciones. Un fallo terminal queda operable en SurrealDB
-para inspección y reproceso.
+La entrega es al menos una vez y el efecto es idempotente por documento,
+versión de extractor y opciones; un documento se identifica dentro de su caso
+por el hash del contenido. Un fallo terminal queda operable en SurrealDB para
+inspección y reproceso. Todo análisis de caso, también el de un aviso breve,
+es un trabajo durable que sobrevive al proceso que atendió la llamada.
 
 ## Arrancar la base S01
 
