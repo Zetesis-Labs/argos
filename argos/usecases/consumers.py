@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 
 from argos.core.ledger import (
     ChunkDraft,
@@ -126,12 +127,30 @@ class ExtractedChunk:
 @dataclass(frozen=True)
 class ExtractionResult:
     extraction_id: str
+    text_artifact_id: str
+    manifest_artifact_id: str
     text_object: StoredObject
     manifest_object: StoredObject
     sha256: str
     page_count: int
     ocr_pages: int
     chunks: tuple[ExtractedChunk, ...]
+
+
+async def _available(
+    services: Services, artifact_id: str, stored: StoredObject, *, expires_at: datetime
+) -> Artifact | None:
+    reserved = await services.ledger.artifact(artifact_id)
+    if reserved is None or reserved.key != stored.key:
+        return None
+    return replace(
+        reserved,
+        state=ArtifactState.AVAILABLE,
+        sha256=stored.sha256,
+        size=stored.size,
+        expires_at=expires_at,
+        revision=reserved.revision + 1,
+    )
 
 
 async def complete_extraction(
@@ -151,37 +170,16 @@ async def complete_extraction(
         return Skipped("unknown document")
     now = services.clock.now()
     expires_at = now + services.policy.retention.full_content
-    extraction_id = result.extraction_id
-    text_artifact = Artifact(
-        id=services.ids.new_id(),
-        tenant_id=job.tenant_id,
-        case_id=job.case_id,
-        bucket=services.bucket,
-        key=result.text_object.key,
-        state=ArtifactState.AVAILABLE,
-        sha256=result.text_object.sha256,
-        size=result.text_object.size,
-        mime="application/zstd",
-        created_at=now,
-        expires_at=expires_at,
-        revision=0,
+    text_artifact = await _available(
+        services, result.text_artifact_id, result.text_object, expires_at=expires_at
     )
-    manifest_artifact = Artifact(
-        id=services.ids.new_id(),
-        tenant_id=job.tenant_id,
-        case_id=job.case_id,
-        bucket=services.bucket,
-        key=result.manifest_object.key,
-        state=ArtifactState.AVAILABLE,
-        sha256=result.manifest_object.sha256,
-        size=result.manifest_object.size,
-        mime="application/json",
-        created_at=now,
-        expires_at=expires_at,
-        revision=0,
+    manifest_artifact = await _available(
+        services, result.manifest_artifact_id, result.manifest_object, expires_at=expires_at
     )
+    if text_artifact is None or manifest_artifact is None:
+        return Skipped("the reserved artifact is gone")
     draft = ExtractionDraft(
-        extraction_id=extraction_id,
+        extraction_id=result.extraction_id,
         text_artifact=text_artifact,
         manifest_artifact=manifest_artifact,
         sha256=result.sha256,

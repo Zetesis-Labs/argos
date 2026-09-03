@@ -20,19 +20,21 @@ class SweepReport:
 
 
 async def _apply(services: Services, sweep: Sweep) -> tuple[str, ...] | None:
+    """El objeto se borra antes de marcar la fila. Al revés, un borrado que falla
+    dejaría el objeto huérfano: la fila marcada ya no vuelve a salir en el barrido."""
     if sweep.empty:
-        return None
-    try:
-        await services.ledger.commit(sweep.ops)
-    except LedgerConflictError:
         return None
     removed: list[str] = []
     for key in sweep.keys:
         try:
             await services.object_store.delete(key)
         except ObjectStoreError:
-            continue
+            return None
         removed.append(key)
+    try:
+        await services.ledger.commit(sweep.ops)
+    except LedgerConflictError:
+        return None
     return tuple(removed)
 
 

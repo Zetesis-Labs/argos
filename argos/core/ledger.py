@@ -590,8 +590,8 @@ def plan_extraction_completion(
     )
     counted = replace(document, page_count=draft.page_count, revision=document.revision + 1)
     ops: list[LedgerOp] = [
-        Insert(draft.text_artifact),
-        Insert(draft.manifest_artifact),
+        Update(draft.text_artifact),
+        Update(draft.manifest_artifact),
         Insert(extraction),
     ]
     ops.extend(

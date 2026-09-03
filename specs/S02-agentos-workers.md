@@ -28,8 +28,11 @@ S02 debe proporcionar:
 - reanudación del caso desde estado durable tras reinicios;
 - autorización por tenant, idempotencia y observabilidad extremo a extremo.
 
-S02 no implementa todavía las fuentes oficiales ni el cálculo completo de
-riesgo. Los especialistas pueden operar con fakes para demostrar coordinación,
+S02 no implementa todavía las fuentes oficiales, el cálculo completo de riesgo
+ni la normalización de identificadores de R2: al entrar en la memoria compartida
+un identificador solo se recorta y se pasa a minúsculas o se compacta según su
+tipo, así que dos formas del mismo dominio, teléfono o IBAN pueden quedar como
+entidades distintas hasta que R2 tenga su propia vertical. Los especialistas pueden operar con fakes para demostrar coordinación,
 permisos y persistencia. Tampoco crea web pública, Telegram, WhatsApp, audio,
 vídeo ni interpretación jurídica de contratos.
 
@@ -391,9 +394,17 @@ cambiar agentes, workflows ni trabajos.
 
 - El PDF, texto completo, chunks y capturas de página caducan a los 30 días por
   defecto. El caso, señales y citas mínimas duran 12 meses.
-- El proceso de retención marca primero los registros caducados, comprueba que no
-  existen referencias vivas y borra objetos exactos; después deja evidencia de
-  la operación sin conservar contenido.
+- El proceso de retención comprueba primero que no existen referencias vivas,
+  después borra el objeto exacto y solo entonces marca el registro. Ese orden
+  importa: la fila marcada ya no vuelve a salir en el barrido, así que marcarla
+  antes de borrar convertiría un fallo del almacén en un objeto huérfano para
+  siempre. Borrar es idempotente, marcar no; si el borrado falla, el registro
+  se queda como estaba y la siguiente pasada lo reintenta. El registro
+  sobrevive como evidencia de la operación, sin conservar contenido.
+- Todo objeto nace con su referencia antes que sus bytes. También los derivados
+  de una extracción: se reserva su artefacto `uploading` y solo se sube después,
+  de modo que un cierre que no llegue a confirmarse deja algo que el janitor
+  recoge por TTL en vez de un objeto que nadie nombra.
 - Ni payloads NATS, sesiones Agno, logs ni trazas contienen el documento o texto
   completo. La sesión no persiste los mensajes de herramienta que transportan
   chunks; las observaciones de modelo en Langfuse llevan modelo, tokens, coste,
@@ -818,8 +829,9 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
 ## S02.33 find_entity_history devuelve al otro tenant solo agregados
 
 - Dado dos casos del tenant A sobre el mismo dominio, uno marcado `confirmed`
-- Cuando `memory_agent` del tenant B pregunta por ese dominio y después el del
-  tenant A pregunta por un dominio que nadie ha visto
+- Cuando `memory_agent` del tenant B pregunta por ese dominio con otra caja y
+  espacios sobrantes, y después el del tenant A pregunta por un dominio que
+  nadie ha visto
 - Entonces B recibe el número de casos, la primera y la última vez que se vio y
   que existe una revisión confirmada, sin identificadores de caso, citas ni
   tenants; y el dominio desconocido devuelve un agregado vacío, no un error
@@ -964,10 +976,15 @@ Por eso la comprobación mira la fila, no el código de respuesta.
 ## S02.48 El janitor borra la subida interrumpida y su objeto al vencer el TTL
 
 - Dado un artefacto `uploading` con su objeto en el almacén, otro `uploading`
-  todavía vigente y uno `available` referenciado por un documento
-- Cuando el janitor barre el staging pasada la caducidad del primero
-- Entonces el primero queda `deleted` sin objeto en el almacén, los otros dos
-  siguen intactos, y ningún trabajo se vio afectado (W5.1; R18; S02 §9, §12)
+  todavía vigente, uno `available` referenciado por un documento y los derivados
+  que una extracción reservó sin llegar a cerrarse
+- Cuando el janitor barre el staging pasada la caducidad, primero con un almacén
+  que falla al borrar y después con uno sano
+- Entonces con el almacén caído no se marca ni una fila y el objeto sigue ahí,
+  de modo que la pasada siguiente lo reintenta; con el almacén sano el artefacto
+  caducado y los derivados reservados quedan `deleted` sin objeto, el vigente y
+  el referenciado siguen intactos y ningún trabajo se vio afectado (W5.1; R18;
+  S02 §9, §12)
 
 ## S02.49 La retención borra el contenido caducado sin dañar el caso
 

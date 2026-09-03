@@ -19,7 +19,8 @@ from argos.core.extraction import (
     ocr_pages,
 )
 from argos.core.keys import extraction_manifest_key, extraction_text_key
-from argos.core.model import Attempt, FailureKind, Job
+from argos.core.ledger import staging_artifact
+from argos.core.model import Artifact, Attempt, FailureKind, Insert, Job
 from argos.core.observability import (
     Attributes,
     attempt_attributes,
@@ -27,6 +28,7 @@ from argos.core.observability import (
     job_attributes,
 )
 from argos.core.ports import (
+    LedgerConflictError,
     ObjectStoreError,
     OpenPdf,
     PageOcr,
@@ -139,9 +141,12 @@ async def _extract(
         text_sha256=_sha256(text.encode()),
     )
     extraction_id = services.ids.new_id()
+    reserved = await _reserve_derivatives(services, job, extraction_id)
+    if reserved is None:
+        return await _fail(services, job, attempt, FailureKind.TRANSIENT, "store.unavailable")
     try:
         stored_text, stored_manifest = await _store_derivatives(
-            services, job, extraction_id, compressed=compressed, described=described
+            services, reserved, compressed=compressed, described=described
         )
     except ObjectStoreError:
         return await _fail(services, job, attempt, FailureKind.TRANSIENT, "store.unavailable")
@@ -152,6 +157,8 @@ async def _extract(
         attempt_number=attempt.number,
         result=ExtractionResult(
             extraction_id=extraction_id,
+            text_artifact_id=reserved.text.id,
+            manifest_artifact_id=reserved.manifest.id,
             text_object=stored_text,
             manifest_object=stored_manifest,
             sha256=_sha256(text.encode()),
@@ -179,16 +186,53 @@ def _pages_of(payload: bytes, tools: PdfTools, *, services: Services) -> tuple[P
         document.close()
 
 
+@dataclass(frozen=True)
+class ReservedDerivatives:
+    text: Artifact
+    manifest: Artifact
+
+
+async def _reserve_derivatives(
+    services: Services, job: Job, extraction_id: str
+) -> ReservedDerivatives | None:
+    """Como en el ingreso: la referencia nace antes que el objeto, así que un cierre
+    que no llegue a confirmarse deja algo que el janitor puede recoger por TTL."""
+    now = services.clock.now()
+    text = staging_artifact(
+        artifact_id=services.ids.new_id(),
+        tenant_id=job.tenant_id,
+        case_id=job.case_id,
+        bucket=services.bucket,
+        key=extraction_text_key(job.tenant_id, job.case_id, extraction_id),
+        mime=TEXT_MIME,
+        now=now,
+        retention=services.policy.retention,
+    )
+    manifest = staging_artifact(
+        artifact_id=services.ids.new_id(),
+        tenant_id=job.tenant_id,
+        case_id=job.case_id,
+        bucket=services.bucket,
+        key=extraction_manifest_key(job.tenant_id, job.case_id, extraction_id),
+        mime=MANIFEST_MIME,
+        now=now,
+        retention=services.policy.retention,
+    )
+    try:
+        await services.ledger.commit([Insert(text), Insert(manifest)])
+    except LedgerConflictError:
+        return None
+    return ReservedDerivatives(text=text, manifest=manifest)
+
+
 async def _store_derivatives(
-    services: Services, job: Job, extraction_id: str, *, compressed: bytes, described: bytes
+    services: Services, reserved: ReservedDerivatives, *, compressed: bytes, described: bytes
 ) -> tuple[StoredObject, StoredObject]:
-    extraction_key = extraction_text_key(job.tenant_id, job.case_id, extraction_id)
-    manifest_key = extraction_manifest_key(job.tenant_id, job.case_id, extraction_id)
     stored_text = await services.object_store.put(
-        extraction_key, one_shot(compressed), size=len(compressed), mime=TEXT_MIME
+        reserved.text.key, one_shot(compressed), size=len(compressed), mime=TEXT_MIME
     )
     stored_manifest = await services.object_store.put(
-        manifest_key, one_shot(described), size=len(described), mime=MANIFEST_MIME
+        reserved.manifest.key, one_shot(described), size=len(described), mime=MANIFEST_MIME
     )
     return stored_text, stored_manifest
 
