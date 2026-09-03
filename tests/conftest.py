@@ -1,7 +1,10 @@
+from dataclasses import replace
+
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
 
 from argos.config import Settings
+from argos.platform.llm import MOCK_MODEL
 from argos.platform.tracing import setup_tracing
 
 
@@ -12,7 +15,12 @@ def anyio_backend() -> str:
 
 @pytest.fixture(scope="session")
 def settings() -> Settings:
-    return Settings()
+    return replace(
+        Settings(),
+        surreal_url="http://surrealdb-test:8000",
+        nats_url="nats://nats-test:4222",
+        analysis_model=MOCK_MODEL,
+    )
 
 
 @pytest.fixture(scope="session")

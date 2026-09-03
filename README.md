@@ -15,13 +15,13 @@ un núcleo determinista valida señales, calcula el nivel y gobierna los estados
   specs a tests.
 - **S02 implementada**: libro de trabajos y outbox, NATS JetStream, RustFS,
   worker de documentos, clúster de agentes, workflow de veredicto, gateway con
-  sus capacidades, janitor de retención, métricas y una identidad por workload.
-  Sus 53 casos tienen test.
+  sus capacidades, janitor de retención, métricas, una identidad por workload y
+  advertencias sintéticas de demostración. Sus 55 casos tienen test.
 - Las verticales del análisis real —identificadores, dominio, puntuación,
   veredicto, fuentes y memoria— siguen el orden de `specs/README.md`.
 
-El puerto `7777` está reservado al futuro AgentOS; en S01 el contenedor de la
-app permanece preparado para desarrollo y no sirve todavía la API final.
+AgentOS sirve el gateway actual en el puerto `7777`. El devcontainer arranca los
+seis procesos de larga vida por separado después de preparar la plataforma.
 
 ## Arquitectura objetivo
 
@@ -41,6 +41,8 @@ API / A2A → AgentOS gateway → workflow + equipo de agentes
   Dentro de una instancia, Agno coordina mediante Team y Workflow.
 - **SurrealDB `argos/ops`** es la fuente de verdad para casos, grafo, trabajos,
   extracciones y outbox. Los agentes acceden mediante herramientas MCP acotadas.
+- **El conocimiento curado** se versiona en Git y se carga en SurrealDB para su
+  consulta local. Argos no necesita un servicio remoto para analizar.
 - **SurrealDB `agno/sessions`** pertenece al runtime de Agno y no sustituye la
   memoria operacional.
 - **NATS JetStream** entrega comandos y eventos por referencia. Los mensajes
@@ -52,14 +54,14 @@ API / A2A → AgentOS gateway → workflow + equipo de agentes
   son agentes, no se exponen por A2A y no toman decisiones de riesgo. El de
   documentos lee con pypdfium2 y solo pasa por Tesseract las páginas sin texto
   utilizable.
-- **LiteLLM** es la única pasarela a modelos y **Langfuse** recibe trazas sin
-  contenido sensible.
+- **LiteLLM** es la única pasarela a modelos. El único proveedor externo
+  soportado es OpenAI; **Langfuse** recibe las trazas sin contenido sensible.
 
 El documento, extracción y chunks pertenecen al tenant y al caso, nunca al
 agente o worker. Una sesión conserva solo referencias, por lo que el caso puede
 reanudar aunque desaparezca quien inició el trabajo.
 
-## Agentes previstos
+## Agentes
 
 | Componente | Cometido |
 |---|---|
@@ -118,15 +120,30 @@ es un trabajo durable que sobrevive al proceso que atendió la llamada.
 
 ## Arrancar el entorno
 
-Con Dev Containers: «Reopen in Container». Sin la extensión:
+Con Dev Containers basta con «Reopen in Container»: Compose levanta la
+infraestructura y los seis procesos, y una tarea idempotente aplica el esquema,
+declara JetStream, crea el bucket y carga el conocimiento sintético local.
+SurrealDB y NATS de test están aislados, por lo que la suite puede ejecutarse
+mientras el producto sigue activo sin que sus workers consuman datos de prueba.
+
+Sin la extensión, el mismo entorno completo se arranca desde el host con:
 
 ```bash
-cp .env.example .env
-docker compose -f .devcontainer/docker-compose.yml up -d --build
-docker exec argos-app-1 uv sync
-docker exec argos-app-1 uv run bootstrap-db
-docker exec argos-app-1 uv run bootstrap-bus
-docker exec argos-app-1 uv run bootstrap-store
+docker compose -f .devcontainer/docker-compose.yml --profile services up -d --build
+```
+
+No hace falta crear `.devcontainer/.env`; el modelo por defecto es `mock` y no
+consume una API externa. Para cambiar puertos, credenciales locales o activar
+OpenAI con `OPENAI_API_KEY` y `ANALYSIS_MODEL=gpt-5.6-terra`, se copia la
+plantilla opcional:
+
+```bash
+cp .env.example .devcontainer/.env
+```
+
+Para comprobar el checkout:
+
+```bash
 docker exec argos-app-1 uv run rehearse-store
 docker exec argos-app-1 uv run pytest
 docker exec argos-app-1 uv run spec-check
@@ -137,7 +154,19 @@ docker exec argos-app-1 uv run pyright
 
 No se ejecutan tests, lint, tipos ni builds desde el host.
 
-| Servicio disponible en S01 | URL en el host |
+`bootstrap-local` es la única preparación del entorno. `bootstrap-db`,
+`bootstrap-bus`, `bootstrap-store` y `seed-demo-warnings` siguen disponibles
+para diagnosticar cada pieza por separado.
+
+`seed-demo-warnings` reconcilia de forma idempotente tres advertencias del
+fixture `tests/fixtures/synthetic_warnings.json`. Sus URLs usan el dominio
+reservado `.example`; no son datos reales ni sustituyen la ingesta de fuentes
+de S07. La advertencia activa de dominio puede consultarse con
+`example-broker.test`. El modelo `mock` no extrae identificadores ni produce
+señales, por lo que una demostración completa del veredicto seguirá devolviendo
+`undetermined` hasta implementar S03 o usar un investigador controlado.
+
+| Servicio | URL en el host |
 |---|---|
 | AgentOS | `http://localhost:7777` (gateway: capacidades, tarjeta y plano de control) |
 | LiteLLM | `http://localhost:4100` |

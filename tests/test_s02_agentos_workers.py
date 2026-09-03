@@ -1,9 +1,10 @@
-"""Casos S02.1 a S02.37: libro de trabajos, outbox, documentos, herramientas y veredicto."""
+"""Casos S02: libro, workers, agentes, gateway y datos sintéticos de demostración."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -107,6 +108,7 @@ from argos.devtools.bootstrap_bus import declare_topology
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.devtools.bootstrap_store import build_store, ensure_bucket
 from argos.devtools.rehearse_store import rehearse
+from argos.devtools.seed_warnings import WarningFixtureError, load_warning_fixture, seed_warnings
 from argos.platform.agno_db import build_agno_db
 from argos.platform.bus import JetStreamBus
 from argos.platform.ledger import ledger_for
@@ -165,6 +167,7 @@ from argos.usecases.tools import (
     ToolCaller,
     ToolDenied,
     find_entity_history,
+    find_registry_matches,
     get_extraction_chunks,
     get_extraction_manifest,
 )
@@ -2641,3 +2644,125 @@ async def test_metrics_are_curator_only(
     rendered = seen.text
     assert submitted.case_id not in rendered and submitted.job_id not in rendered
     assert tenant.id not in rendered
+
+
+async def test_demo_warnings_are_valid_queryable_and_idempotent(tmp_path: Path) -> None:
+    """S02.54 las advertencias sintéticas se validan, se consultan y no se duplican."""
+    ledger = InMemoryLedger()
+    warnings = load_warning_fixture(FIXTURES / "synthetic_warnings.json")
+
+    first = await seed_warnings(ledger, warnings)
+    second = await seed_warnings(ledger, warnings)
+
+    assert first.inserted == len(warnings) and first.updated == first.unchanged == 0
+    assert second.unchanged == len(warnings) and second.inserted == second.updated == 0
+    changed = (replace(warnings[0], active=False), *warnings[1:])
+    third = await seed_warnings(ledger, changed)
+    stored = await ledger.warning(warnings[0].id)
+    assert third.updated == 1 and third.unchanged == len(warnings) - 1
+    assert stored is not None and stored.active is False and stored.revision == 1
+    matches = await find_registry_matches(
+        Services(
+            ledger=ledger,
+            object_store=InMemoryObjectStore(),
+            bus=FakeBus(),
+            clock=FakeClock(),
+            ids=SequentialIds(),
+            policy=TEST_POLICY,
+            bucket="argos",
+        ),
+        ToolCaller(
+            agent=AgentName.REGISTRIES,
+            tenant_id="tenant-demo",
+            case_id="case-demo",
+        ),
+        kind=EntityKind.DOMAIN,
+        value="example-broker.test",
+    )
+    assert not isinstance(matches, ToolDenied)
+    assert [(match.regulator, match.url, match.captured_at, match.active) for match in matches] == [
+        (
+            "FCA",
+            "https://warnings.fca.example/demo/example-broker",
+            "2026-09-01T00:00:00+00:00",
+            True,
+        )
+    ]
+
+    invalid = tmp_path / "warnings-without-capture.json"
+    invalid.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "demo-without-capture",
+                    "regulator": "CNMV",
+                    "url": "https://warnings.cnmv.example/demo/without-capture",
+                    "entity_kind": "domain",
+                    "entity_value": "without-capture.test",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(WarningFixtureError, match="captured_at"):
+        load_warning_fixture(invalid)
+
+
+def test_services_profile_bootstraps_and_runs_argos(settings: Settings) -> None:
+    """S02.55 el perfil services prepara y ejecuta Argos sin pasos manuales."""
+    compose = Path(".devcontainer/docker-compose.yml").read_text(encoding="utf-8")
+
+    def service_block(name: str) -> str:
+        match = re.search(
+            rf"^  {re.escape(name)}:\n(?P<body>(?:(?:    .*)?\n)*)",
+            compose,
+            re.MULTILINE,
+        )
+        assert match is not None, f"falta el servicio {name}"
+        return match.group(0)
+
+    bootstrap = service_block("bootstrap")
+    assert 'profiles: ["services"]' in bootstrap
+    assert 'command: ["uv", "run", "--frozen", "bootstrap-local"]' in bootstrap
+
+    for service, command in {
+        "gateway": "gateway",
+        "dispatcher": "dispatcher",
+        "worker": "worker",
+        "resumer": "resumer",
+        "analyzer": "analyzer",
+        "janitor": "janitor",
+    }.items():
+        block = service_block(service)
+        assert 'profiles: ["services"]' in block
+        assert f'command: ["uv", "run", "--frozen", "{command}"]' in block
+        assert "bootstrap:" in block
+        assert "condition: service_completed_successfully" in block
+
+    gateway = service_block("gateway")
+    assert '"127.0.0.1:${AGENTOS_PORT:-7777}:7777"' in gateway
+    assert '"127.0.0.1:${AGENTOS_PORT:-7777}:7777"' not in service_block("app")
+
+    devcontainer = json.loads(
+        Path(".devcontainer/devcontainer.json").read_text(encoding="utf-8")
+    )
+    assert set(devcontainer["runServices"]) == {
+        "app",
+        "gateway",
+        "dispatcher",
+        "worker",
+        "resumer",
+        "analyzer",
+        "janitor",
+        "surrealdb-test",
+        "nats-test",
+    }
+    assert "postCreateCommand" not in devcontainer
+    assert "postStartCommand" not in devcontainer
+    assert settings.surreal_url == "http://surrealdb-test:8000"
+    assert settings.nats_url == "nats://nats-test:4222"
+    assert service_block("surrealdb-test") and service_block("nats-test")
+    assert 'bootstrap-local = "argos.devtools.bootstrap_local:main"' in Path(
+        "pyproject.toml"
+    ).read_text(encoding="utf-8")

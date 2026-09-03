@@ -1,0 +1,29 @@
+[
+  {
+    "id": "demo-cnmv-nexolabs-capital",
+    "regulator": "CNMV",
+    "url": "https://warnings.cnmv.example/demo/nexolabs-capital",
+    "entity_kind": "company",
+    "entity_value": "Nexolabs Capital",
+    "active": true,
+    "captured_at": "2026-09-01T00:00:00Z"
+  },
+  {
+    "id": "demo-fca-example-broker",
+    "regulator": "FCA",
+    "url": "https://warnings.fca.example/demo/example-broker",
+    "entity_kind": "domain",
+    "entity_value": "example-broker.test",
+    "active": true,
+    "captured_at": "2026-09-01T00:00:00Z"
+  },
+  {
+    "id": "demo-iosco-retired-platform",
+    "regulator": "IOSCO I-SCAN",
+    "url": "https://warnings.iosco.example/demo/retired-platform",
+    "entity_kind": "domain",
+    "entity_value": "retired-platform.test",
+    "active": false,
+    "captured_at": "2026-09-01T00:00:00Z"
+  }
+]

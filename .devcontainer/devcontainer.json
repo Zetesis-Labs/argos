@@ -2,6 +2,17 @@
   "name": "Argos",
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
+  "runServices": [
+    "app",
+    "gateway",
+    "dispatcher",
+    "worker",
+    "resumer",
+    "analyzer",
+    "janitor",
+    "surrealdb-test",
+    "nats-test"
+  ],
   "workspaceFolder": "/workspace",
   "shutdownAction": "stopCompose",
   "overrideCommand": false,
@@ -13,8 +24,6 @@
     "8100": { "label": "SurrealDB", "onAutoForward": "silent" },
     "8200": { "label": "Surrealist", "onAutoForward": "silent" }
   },
-  "postCreateCommand": "uv sync && uv run bootstrap-db",
-  "postStartCommand": "uv run bootstrap-db",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -32,8 +41,5 @@
         "[python]": { "editor.defaultFormatter": "charliermarsh.ruff" }
       }
     }
-  },
-  "containerEnv": {
-    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
   }
 }
