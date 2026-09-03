@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
     "agno[mcp,openai,os,surrealdb]>=3.0,<3.1",
     "httpx>=0.28,<0.29",
+    "nats-py>=2.15,<2.16",
     "openinference-instrumentation-agno>=1.0,<1.1",
     "opentelemetry-exporter-otlp-proto-http>=1.44,<1.45",
     "opentelemetry-sdk>=1.44,<1.45",
@@ -18,6 +19,8 @@ dependencies = [
 
 [project.scripts]
 bootstrap-db = "argos.devtools.bootstrap_db:main"
+bootstrap-bus = "argos.devtools.bootstrap_bus:main"
+dispatcher = "argos.services.dispatcher:main"
 spec-check = "argos.devtools.spec_check:main"
 
 [build-system]

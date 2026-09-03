@@ -52,6 +52,8 @@ class Settings:
         default_factory=lambda: environment_secret("SURREAL_LEDGER_PASSWORD", "ledger-dev-password")
     )
     artifact_bucket: str = field(default_factory=lambda: environment("ARTIFACT_BUCKET", "argos"))
+
+    nats_url: str = field(default_factory=lambda: environment("NATS_URL", "nats://nats:4222"))
     ops_namespace: str = field(default_factory=lambda: environment("OPS_NAMESPACE", "argos"))
     ops_database: str = field(default_factory=lambda: environment("OPS_DATABASE", "ops"))
     agno_namespace: str = field(default_factory=lambda: environment("AGNO_NAMESPACE", "agno"))
