@@ -7,18 +7,27 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from argos.core.analysis import DraftEntity, DraftSignal
 from argos.core.messages import JobMessage
 from argos.core.model import (
     Artifact,
     Attempt,
     Case,
+    CaseEntity,
     Chunk,
     Document,
+    Entity,
+    EntityKind,
     Extraction,
     Job,
     LedgerOp,
+    OfficialWarning,
     OutboxEntry,
+    RiskLevel,
+    Signal,
     Tenant,
+    Verdict,
+    VerdictOutcome,
 )
 
 
@@ -55,6 +64,8 @@ class Ledger(Protocol):
 
     async def document_by_hash(self, case_id: str, sha256: str) -> Document | None: ...
 
+    async def documents_of_case(self, case_id: str) -> list[Document]: ...
+
     async def job(self, job_id: str) -> Job | None: ...
 
     async def jobs_of_case(self, case_id: str) -> list[Job]: ...
@@ -73,7 +84,21 @@ class Ledger(Protocol):
 
     async def extractions_of_document(self, document_id: str) -> list[Extraction]: ...
 
+    async def extractions_of_case(self, case_id: str) -> list[Extraction]: ...
+
     async def chunks(self, extraction_id: str) -> list[Chunk]: ...
+
+    async def entity_by_value(self, kind: EntityKind, value: str) -> Entity | None: ...
+
+    async def entities_of_case(self, case_id: str) -> list[CaseEntity]: ...
+
+    async def cases_of_entity(self, entity_id: str) -> list[CaseEntity]: ...
+
+    async def warnings_for(self, kind: EntityKind, value: str) -> list[OfficialWarning]: ...
+
+    async def signals_of_case(self, case_id: str) -> list[Signal]: ...
+
+    async def current_verdict(self, case_id: str) -> Verdict | None: ...
 
     async def delete_tenant_data(self, tenant_id: str) -> None: ...
 
@@ -194,3 +219,50 @@ class PdfReader(Protocol):
 
 class PageOcr(Protocol):
     def text_of(self, image: bytes, *, language: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class ExtractionRef:
+    extraction_id: str
+    document_id: str
+    page_count: int
+
+
+@dataclass(frozen=True)
+class CaseBrief:
+    """Lo que el clúster de agentes recibe: referencias, nunca el documento (R8)."""
+
+    tenant_id: str
+    case_id: str
+    language: str
+    correlation_id: str
+    extractions: tuple[ExtractionRef, ...]
+    missing: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Investigation:
+    signals: tuple[DraftSignal, ...]
+    entities: tuple[DraftEntity, ...]
+    missing: tuple[str, ...]
+
+
+class Investigator(Protocol):
+    async def investigate(self, brief: CaseBrief) -> Investigation: ...
+
+
+@dataclass(frozen=True)
+class VerdictBrief:
+    case_id: str
+    language: str
+    level: RiskLevel
+    outcome: VerdictOutcome
+    actions: tuple[str, ...]
+    missing: tuple[str, ...]
+    signals: tuple[DraftSignal, ...]
+
+
+class Narrator(Protocol):
+    """Redacta la explicación. No puede cambiar el nivel: lo recibe ya calculado."""
+
+    async def narrate(self, brief: VerdictBrief) -> str: ...

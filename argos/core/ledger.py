@@ -29,6 +29,7 @@ from argos.core.model import (
     OutboxEntry,
     OutboxKind,
     OutboxState,
+    ReviewState,
     Update,
     attempt_id,
     command_entry_id,
@@ -181,6 +182,9 @@ def _case_for_submission(
             language=None,
             correlation_id=correlation_id,
             previous_case_id=None,
+            review_state=ReviewState.UNREVIEWED,
+            reviewed_at=None,
+            reviewed_by=None,
             created_at=now,
             updated_at=now,
             revision=0,
@@ -199,6 +203,9 @@ def _case_for_submission(
             language=target.language,
             correlation_id=correlation_id,
             previous_case_id=target.id,
+            review_state=ReviewState.UNREVIEWED,
+            reviewed_at=None,
+            reviewed_by=None,
             created_at=now,
             updated_at=now,
             revision=0,
@@ -309,6 +316,9 @@ def plan_notice_case(
         language=language,
         correlation_id=correlation_id,
         previous_case_id=None,
+        review_state=ReviewState.UNREVIEWED,
+        reviewed_at=None,
+        reviewed_by=None,
         created_at=now,
         updated_at=now,
         revision=0,
@@ -395,7 +405,7 @@ class AttemptClosed:
     job: Job
 
 
-def _is_current(job: Job, attempt: Attempt) -> bool:
+def is_current_attempt(job: Job, attempt: Attempt) -> bool:
     return (
         job.state is JobState.RUNNING
         and job.attempt == attempt.number
@@ -469,7 +479,7 @@ def plan_attempt_failure(
     code: str,
     document: Document | None = None,
 ) -> AttemptClosed | Obsolete:
-    if not _is_current(job, attempt):
+    if not is_current_attempt(job, attempt):
         return Obsolete("attempt is not the running one")
     closed = replace(
         attempt,
@@ -496,7 +506,7 @@ LEASE_LOST = "job.lease_lost"
 def plan_lease_recovery(
     *, job: Job, attempt: Attempt, now: datetime, policy: JobPolicy
 ) -> AttemptClosed | Obsolete:
-    if not _is_current(job, attempt):
+    if not is_current_attempt(job, attempt):
         return Obsolete("attempt is not the running one")
     if job.lease_until is None or job.lease_until > now:
         return Obsolete("lease is still valid")
@@ -548,7 +558,7 @@ def plan_extraction_completion(
     now: datetime,
     retention: Retention,
 ) -> AttemptClosed | Obsolete:
-    if not _is_current(job, attempt):
+    if not is_current_attempt(job, attempt):
         return Obsolete("attempt is not the running one")
     if job.document_id != document.id:
         return Obsolete("document does not belong to the job")
