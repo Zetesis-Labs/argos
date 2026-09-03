@@ -74,6 +74,11 @@ asíncrono para los trabajos pesados.
 
 - La jerarquía de propiedad es `tenant → case → document → extraction → chunk`.
   Los datos nunca pertenecen al agente, al workflow ni al worker que los creó.
+- Las entidades del presunto actor y sus vínculos son memoria compartida entre
+  tenants: un mismo dominio, IBAN o wallet es un solo nodo del grafo. Los casos
+  que lo citan siguen siendo del tenant. Un tenant recibe de la memoria solo
+  agregados (en cuántos casos y desde cuándo se vio, si alguno está
+  confirmado); nunca identificadores, citas ni tenant de casos ajenos.
 - La entrada breve de un aviso no se persiste íntegra. Se conservan su hash, los
   identificadores del presunto actor, las señales con la evidencia mínima y los
   vínculos necesarios para investigar reincidencias.
@@ -86,6 +91,8 @@ asíncrono para los trabajos pesados.
   `extraction_id`; no es la fuente de verdad del caso.
 - El acceso se concede por identidad de servicio y mínimo privilegio. No se
   comparten credenciales entre agentes, workers y runtime en producción.
+- El curador opera el despliegue completo, no un tenant. Sus acciones cruzan
+  tenants y cada una queda atribuida y fechada.
 - Ningún aviso real entra en el repositorio: todos los datos de prueba son
   sintéticos y viven en `tests/fixtures/`.
 
@@ -142,7 +149,10 @@ asíncrono para los trabajos pesados.
   aplicación.
 - `ARGOS_JOBS` transporta comandos versionados, inicialmente
   `argos.jobs.document.extract.v1`, `argos.jobs.source.ingest.v1` y
-  `argos.jobs.case.analyze.v1`. `ARGOS_EVENTS` transporta sus resultados,
+  `argos.jobs.case.analyze.v1`. Todo análisis de caso, también el de un aviso
+  breve, es un trabajo `case.analyze`: la llamada síncrona espera su estado
+  terminal dentro del presupuesto y el caso sobrevive al proceso que la
+  atendía. `ARGOS_EVENTS` transporta sus resultados,
   inicialmente `argos.events.document.extracted.v1`,
   `argos.events.document.failed.v1` y `argos.events.case.completed.v1`.
 - El cuerpo de un mensaje contiene únicamente `job_id` y `attempt`. El estado,
@@ -151,9 +161,16 @@ asíncrono para los trabajos pesados.
 - La entrega es al menos una vez: consumidor durable, ACK explícito después de
   persistir, reintentos con backoff e idempotencia. `Nats-Msg-Id` se deriva de
   `job_id` y `attempt`.
-- La idempotencia de una extracción se basa en tenant, hash del contenido,
-  versión del extractor y opciones normalizadas. Reprocesar crea una versión
-  nueva; nunca sobrescribe silenciosamente una extracción anterior.
+- Cada intento nace en SurrealDB con su comando de outbox y un arrendamiento.
+  Un intento cuyo arrendamiento vence sin cerrarse se da por perdido y se
+  reencola por código determinista; la reentrega propia de NATS es solo red de
+  seguridad y una entrega con un intento que no es el actual se confirma sin
+  efecto.
+- Un documento se identifica dentro de su caso por el hash del contenido, y una
+  extracción por documento, versión del extractor y opciones normalizadas. El
+  mismo PDF en otro caso es otro documento con su propia extracción y
+  caducidad. Reprocesar crea una versión nueva; nunca sobrescribe
+  silenciosamente una extracción anterior.
 - Agotados los intentos, el trabajo queda en estado terminal operable en
   SurrealDB. El curador puede inspeccionarlo y pedir un reprocesamiento; no se
   pierde en una cola muerta opaca.
@@ -186,7 +203,11 @@ asíncrono para los trabajos pesados.
 - Toda ejecución de agente, equipo, workflow o trabajo asíncrono propaga una
   correlación y traza a Langfuse por OpenTelemetry (OpenInference donde
   corresponda). El coste lo calcula LiteLLM; el runtime no lo duplica.
-- Las trazas no contienen documentos completos, secretos ni datos personales.
+- Las trazas no contienen documentos completos, secretos ni datos personales:
+  las observaciones de modelo llevan metadatos (modelo, tokens, coste,
+  duración, identificadores), no sus mensajes. La sesión de Agno no persiste
+  los mensajes de herramienta que transportan fragmentos de documento; guarda
+  sus referencias.
 - Los tests corren contra el modelo `mock` de LiteLLM o contra fakes. Ningún
   test gasta dinero por defecto.
 
