@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 import sys
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from argos.config import Settings
@@ -13,6 +11,7 @@ from argos.core.policy import Policy
 from argos.platform.bus import JetStreamBus
 from argos.platform.clock import SystemClock
 from argos.platform.ledger import SurrealLedger
+from argos.services.runtime import Sleep, Stop, stop_on_signals
 from argos.usecases.deps import Dispatching
 from argos.usecases.dispatch import (
     DispatchReport,
@@ -20,9 +19,6 @@ from argos.usecases.dispatch import (
     dispatch_once,
     recover_leases_once,
 )
-
-Stop = Callable[[], bool]
-Sleep = Callable[[float], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -50,14 +46,6 @@ async def run_dispatcher(
     return ticks
 
 
-def _stop_on_signals() -> Stop:
-    stopping = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for received in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(received, stopping.set)
-    return stopping.is_set
-
-
 async def serve(settings: Settings, policy: Policy, *, interval: float) -> None:
     ledger = SurrealLedger(
         url=f"{settings.surreal_ws_url}/rpc",
@@ -72,7 +60,7 @@ async def serve(settings: Settings, policy: Policy, *, interval: float) -> None:
     services = Dispatching(ledger=ledger, bus=bus, clock=SystemClock(), policy=policy)
     try:
         await run_dispatcher(
-            services, stop=_stop_on_signals(), sleep=asyncio.sleep, interval=interval
+            services, stop=stop_on_signals(), sleep=asyncio.sleep, interval=interval
         )
     finally:
         await bus.close()
