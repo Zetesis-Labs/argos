@@ -47,10 +47,19 @@ class JobPolicy:
 
 
 @dataclass(frozen=True)
+class ExtractionPolicy:
+    min_usable_chars_per_page: int = 24
+    chunk_max_chars: int = 1200
+    ocr_language: str = "spa+eng"
+    render_scale: float = 2.0
+
+
+@dataclass(frozen=True)
 class Policy:
     documents: DocumentLimits = DocumentLimits()
     notices: NoticeLimits = NoticeLimits()
     retention: Retention = Retention()
     jobs: JobPolicy = JobPolicy()
+    extraction: ExtractionPolicy = ExtractionPolicy()
     extractor_version: str = "pdf-text-v1"
     extraction_options: str = "{}"
