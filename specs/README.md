@@ -38,10 +38,9 @@ el código.
 | [S01](S01-plataforma.md) | Base verificada: SurrealDB/MCP, LiteLLM y Langfuse | 0 | constitución §2, §7, §11–§12 |
 | [S02](S02-agentos-workers.md) | AgentOS, A2A, NATS, RustFS y worker de documentos | 1 | W1, W2, W5; R1, R8, R9, R12, R15–R29; constitución §3–§12 |
 
-S01 tiene casos y tests verdes. S02 contiene la arquitectura aprobada y los
-criterios de aceptación, pero todavía no tiene casos `S02.n`: se numerarán a la
-vez que sus tests al empezar la implementación. Esto evita presentar una
-decisión documentada como funcionalidad ya disponible.
+S01 tiene casos y tests verdes. S02 está en implementación: sus casos `S02.n`
+se numeran a la vez que sus tests, en el orden de implantación de su §14, y los
+criterios de aceptación que aún no tienen caso son trabajo pendiente.
 
 Fases previstas (una spec técnica por vertical, se crean al empezar la fase):
 
