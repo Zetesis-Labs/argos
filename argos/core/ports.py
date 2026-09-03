@@ -14,12 +14,14 @@ from argos.core.model import (
     Attempt,
     Case,
     CaseEntity,
+    CaseState,
     Chunk,
     Document,
     Entity,
     EntityKind,
     Extraction,
     Job,
+    JobCount,
     LedgerOp,
     OfficialWarning,
     OutboxEntry,
@@ -95,6 +97,16 @@ class Ledger(Protocol):
     async def cases_of_entity(self, entity_id: str) -> list[CaseEntity]: ...
 
     async def warnings_for(self, kind: EntityKind, value: str) -> list[OfficialWarning]: ...
+
+    async def stale_artifacts(self, now: datetime, *, limit: int) -> list[Artifact]: ...
+
+    async def expired_documents(self, now: datetime, *, limit: int) -> list[Document]: ...
+
+    async def job_counts(self) -> list[JobCount]: ...
+
+    async def oldest_queued_job(self) -> Job | None: ...
+
+    async def count_cases(self, states: Sequence[CaseState]) -> int: ...
 
     async def signals_of_case(self, case_id: str) -> list[Signal]: ...
 
