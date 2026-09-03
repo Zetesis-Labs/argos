@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncIterable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from argos.core.messages import ConsumerSpec, JobMessage, decode_job_message
 from argos.core.model import (
     Artifact,
     Attempt,
@@ -23,7 +25,13 @@ from argos.core.model import (
     Tenant,
     table_name,
 )
-from argos.core.ports import BusUnavailableError, LedgerConflictError, OutboundMessage, StoredObject
+from argos.core.ports import (
+    BusUnavailableError,
+    Delivery,
+    LedgerConflictError,
+    OutboundMessage,
+    StoredObject,
+)
 
 
 class FakeClock:
@@ -244,13 +252,87 @@ class InMemoryObjectStore:
         self.objects.pop(key, None)
 
 
+@dataclass
+class _Queued:
+    message: OutboundMessage
+    deliveries: int = 0
+    inflight: bool = False
+    acked: bool = False
+
+
+class FakeDelivery:
+    def __init__(self, queued: _Queued) -> None:
+        self._queued = queued
+        self._message = decode_job_message(queued.message.payload)
+
+    @property
+    def message(self) -> JobMessage:
+        return self._message
+
+    @property
+    def subject(self) -> str:
+        return self._queued.message.subject
+
+    @property
+    def delivery_count(self) -> int:
+        return self._queued.deliveries
+
+    async def ack(self) -> None:
+        self._queued.inflight = False
+        self._queued.acked = True
+
+    async def nak(self) -> None:
+        self._queued.inflight = False
+
+
+class FakeDeliveries:
+    def __init__(self, queue: list[_Queued], subjects: Sequence[str], max_deliveries: int) -> None:
+        self._queue = queue
+        self._subjects = tuple(subjects)
+        self._max_deliveries = max_deliveries
+
+    def _deliverable(self, queued: _Queued) -> bool:
+        return (
+            queued.message.subject in self._subjects
+            and not queued.acked
+            and not queued.inflight
+            and queued.deliveries < self._max_deliveries
+        )
+
+    async def fetch(self, *, limit: int, timeout: float) -> Sequence[Delivery]:
+        ready = [queued for queued in self._queue if self._deliverable(queued)][:limit]
+        for queued in ready:
+            queued.inflight = True
+            queued.deliveries += 1
+        return [FakeDelivery(queued) for queued in ready]
+
+
 class FakeBus:
-    def __init__(self, *, failures: int = 0) -> None:
+    """Publica con la misma deduplicación por `message_id` y reentrega que JetStream."""
+
+    def __init__(self, *, failures: int = 0, max_deliveries: int = 3) -> None:
         self.published: list[OutboundMessage] = []
         self.failures_remaining = failures
+        self._max_deliveries = max_deliveries
+        self._queue: list[_Queued] = []
+        self._seen: set[str] = set()
 
     async def publish(self, message: OutboundMessage) -> None:
         if self.failures_remaining > 0:
             self.failures_remaining -= 1
             raise BusUnavailableError("bus rejected the publication")
+        if message.message_id in self._seen:
+            return
+        self._seen.add(message.message_id)
         self.published.append(message)
+        self._queue.append(_Queued(message=message))
+
+    async def deliveries(
+        self, spec: ConsumerSpec, *, ack_wait: timedelta | None = None
+    ) -> FakeDeliveries:
+        return FakeDeliveries(self._queue, spec.subjects, self._max_deliveries)
+
+    async def purge(self, *streams: str) -> None:
+        self._queue.clear()
+        self._seen.clear()
+        self.published.clear()
