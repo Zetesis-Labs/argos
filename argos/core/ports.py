@@ -266,3 +266,21 @@ class Narrator(Protocol):
     """Redacta la explicación. No puede cambiar el nivel: lo recibe ya calculado."""
 
     async def narrate(self, brief: VerdictBrief) -> str: ...
+
+
+@dataclass(frozen=True)
+class ConversationBrief:
+    """W2: la conversación se apoya en el veredicto y su evidencia, no en el original."""
+
+    case_id: str
+    language: str
+    question: str
+    level: RiskLevel
+    outcome: VerdictOutcome
+    summary: str
+    actions: tuple[str, ...]
+    quotes: tuple[str, ...]
+
+
+class CaseAdvisor(Protocol):
+    async def answer(self, brief: ConversationBrief) -> str: ...

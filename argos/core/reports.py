@@ -10,7 +10,7 @@ from typing import cast
 
 from argos.core.analysis import DraftEntity, DraftSignal, Evidence
 from argos.core.model import Analysis, EntityKind, Strength
-from argos.core.ports import CaseBrief, Investigation, VerdictBrief
+from argos.core.ports import CaseBrief, ConversationBrief, Investigation, VerdictBrief
 
 INVESTIGATION_CONTRACT = (
     "Responde solo con un objeto JSON con las claves signals, entities y missing. "
@@ -176,3 +176,37 @@ def parse_investigation(text: str, *, expected: Sequence[Analysis]) -> Investiga
         entity for item in _items(report, "entities") if (entity := _entity(item)) is not None
     )
     return Investigation(signals=signals, entities=entities, missing=_missing(report))
+
+
+NO_VERDICT_YET = (
+    "Todavía no hay veredicto para este caso: cuando termine su análisis podrás consultarlo aquí."
+)
+
+
+def conversation_prompt(brief: ConversationBrief) -> str:
+    lines = [
+        f"Caso {brief.case_id}. Responde en {brief.language}.",
+        f"Veredicto emitido: nivel {brief.level}, desenlace {brief.outcome}.",
+        f"Explicación registrada: {brief.summary}",
+        "Acciones ya recomendadas:",
+        *(f"- {action}" for action in brief.actions),
+    ]
+    if brief.quotes:
+        lines.append("Evidencia conservada:")
+        lines.extend(f"- {quote}" for quote in brief.quotes)
+    lines.extend(
+        (
+            "Responde solo con esta evidencia. No cambies el nivel ni añadas indicios.",
+            "Si piden asesoramiento financiero o jurídico, decline y recuerda el alcance.",
+            "Si aportan datos nuevos, ofrece analizarlos como caso nuevo vinculado.",
+            f"Pregunta: {brief.question}",
+        )
+    )
+    return "\n".join(lines)
+
+
+def fallback_answer(brief: ConversationBrief) -> str:
+    return (
+        f"El caso mantiene el nivel {brief.level}. {brief.summary} "
+        f"Sigue estas acciones: {'; '.join(brief.actions)}"
+    ).strip()
