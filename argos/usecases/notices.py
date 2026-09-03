@@ -8,7 +8,7 @@ from argos.core.ledger import ReusedCase, plan_notice_case
 from argos.core.model import JobType
 from argos.core.notices import Notice, NoticeRejected, validate_notice
 from argos.core.ports import LedgerConflictError
-from argos.usecases.deps import Services
+from argos.usecases.deps import Bookkeeping
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class NoticeRefused:
     code: str
 
 
-async def _analysis_job_id(services: Services, case_id: str) -> str | None:
+async def _analysis_job_id(services: Bookkeeping, case_id: str) -> str | None:
     jobs = [
         job
         for job in await services.ledger.jobs_of_case(case_id)
@@ -33,7 +33,7 @@ async def _analysis_job_id(services: Services, case_id: str) -> str | None:
 
 
 async def open_notice_case(
-    services: Services, *, tenant_id: str, notice: Notice, correlation_id: str
+    services: Bookkeeping, *, tenant_id: str, notice: Notice, correlation_id: str
 ) -> NoticeOpened | NoticeRefused:
     ledger = services.ledger
     tenant = await ledger.tenant(tenant_id)
