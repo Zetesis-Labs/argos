@@ -2304,7 +2304,7 @@ async def test_each_workload_has_its_own_identity(settings: Settings, ledger_sch
     assert set(WORKLOADS) <= users
     assert "ledger" not in users
 
-    for name in WORKLOADS:
+    for name, neighbour in zip(WORKLOADS, WORKLOADS[1:] + WORKLOADS[:1], strict=True):
         credentials = settings.workload(name)
         token = await http.sign_in(
             ns=settings.ops_namespace,
@@ -2318,7 +2318,7 @@ async def test_each_workload_has_its_own_identity(settings: Settings, ledger_sch
                 ns=settings.ops_namespace,
                 db=settings.ops_database,
                 user=credentials.user,
-                password="otra-cosa",
+                password=settings.workload(neighbour).password.get_secret_value(),
             )
 
     agent_auth = await http.sign_in(
