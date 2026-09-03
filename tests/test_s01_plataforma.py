@@ -15,7 +15,7 @@ from argos.config import SecretValue, Settings
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.platform.agent import run_agent
 from argos.platform.agno_db import build_agno_db
-from argos.platform.llm import MOCK_MODEL, build_model
+from argos.platform.llm import MOCK_MODEL, build_model, close_model
 from argos.platform.mcp import (
     list_tool_names,
     mcp_session,
@@ -200,13 +200,17 @@ async def test_minimal_agent_leaves_trace_in_langfuse(
     """S01.7 un agente mínimo deja traza en Langfuse."""
     nonce = uuid4().hex
     user_id = f"s01-{nonce}"
-    agent = Agent(name="S01 smoke", model=build_model(settings, MOCK_MODEL), telemetry=False)
+    model = build_model(settings, MOCK_MODEL)
+    agent = Agent(name="S01 smoke", model=model, telemetry=False)
     tracer = tracing.get_tracer("argos-tests")
-    with tracer.start_as_current_span("s01-smoke") as root:
-        root.set_attribute("langfuse.user.id", user_id)
-        await run_agent(agent, f"ping {nonce}", user_id=user_id, session_id=f"session-{nonce}")
-    trace_id = format(root.get_span_context().trace_id, "032x")
-    tracing.force_flush()
+    try:
+        with tracer.start_as_current_span("s01-smoke") as root:
+            root.set_attribute("langfuse.user.id", user_id)
+            await run_agent(agent, f"ping {nonce}", user_id=user_id, session_id=f"session-{nonce}")
+        trace_id = format(root.get_span_context().trace_id, "032x")
+        tracing.force_flush()
+    finally:
+        await close_model(model)
 
     observations = await wait_for_observations(settings, trace_id=trace_id, timeout_seconds=60)
     assert observations, f"Langfuse no recibió ninguna observación de la traza {trace_id}"
@@ -254,13 +258,17 @@ def parse_observations(payload: object) -> list[dict[str, JsonValue]]:
 async def test_agno_sessions_live_only_in_agno_database(settings: Settings) -> None:
     """S01.8 Agno persiste sus sesiones en agno/sessions y nada en argos/ops."""
     session_id = f"s01-{uuid4().hex}"
+    model = build_model(settings, MOCK_MODEL)
     agent = Agent(
         name="S01 sessions",
-        model=build_model(settings, MOCK_MODEL),
+        model=model,
         db=build_agno_db(settings),
         telemetry=False,
     )
-    await run_agent(agent, "ping", session_id=session_id, user_id="s01")
+    try:
+        await run_agent(agent, "ping", session_id=session_id, user_id="s01")
+    finally:
+        await close_model(model)
 
     sessions_db = await info_for_db(settings, settings.agno_namespace, settings.agno_database)
     agno_tables = {t for t in names_in(sessions_db.get("tables")) if t.startswith("agno_")}
