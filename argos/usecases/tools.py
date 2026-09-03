@@ -7,16 +7,9 @@ from dataclasses import dataclass
 
 from argos.core.agents import AgentName, Capability, allows
 from argos.core.analysis import CaseAppearance, EntityHistory, aggregate_history
-from argos.core.model import (
-    CaseState,
-    EntityKind,
-    ExtractionState,
-    JobState,
-    JobType,
-    RiskLevel,
-    VerdictOutcome,
-)
+from argos.core.model import CaseState, EntityKind, ExtractionState, JobState, JobType
 from argos.usecases.deps import Bookkeeping
+from argos.usecases.queries import VerdictSummary, summary_of
 
 NOT_AUTHORIZED = "tool.not_authorized"
 CASE_NOT_FOUND = "case.not_found"
@@ -34,16 +27,6 @@ class ToolCaller:
 @dataclass(frozen=True)
 class ToolDenied:
     code: str
-
-
-@dataclass(frozen=True)
-class VerdictSummary:
-    version: int
-    level: RiskLevel
-    outcome: VerdictOutcome
-    summary: str
-    actions: tuple[str, ...]
-    missing: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -131,23 +114,13 @@ async def get_case_context(services: Bookkeeping, caller: ToolCaller) -> CaseCon
         for extraction in await services.ledger.extractions_of_case(case.id)
         if extraction.state is ExtractionState.AVAILABLE
     ]
-    verdict = await services.ledger.current_verdict(case.id)
     return CaseContext(
         case_id=case.id,
         state=case.state,
         language=case.language,
         document_ids=tuple(document.id for document in documents),
         extraction_ids=tuple(extraction.id for extraction in extractions),
-        verdict=None
-        if verdict is None
-        else VerdictSummary(
-            version=verdict.version,
-            level=verdict.level,
-            outcome=verdict.outcome,
-            summary=verdict.summary,
-            actions=verdict.actions,
-            missing=verdict.missing,
-        ),
+        verdict=summary_of(await services.ledger.current_verdict(case.id)),
     )
 
 
