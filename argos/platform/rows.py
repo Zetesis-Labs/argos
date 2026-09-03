@@ -6,7 +6,7 @@ import types
 from dataclasses import fields
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol, cast, get_type_hints
+from typing import Protocol, cast, get_args, get_origin, get_type_hints
 
 from surrealdb import RecordID
 
@@ -26,7 +26,12 @@ def to_row(record: LedgerRecord) -> Row:
         if field.name == "id":
             continue
         value = cast(object, getattr(record, field.name))
-        row[field.name] = value.value if isinstance(value, StrEnum) else value
+        if isinstance(value, StrEnum):
+            row[field.name] = value.value
+        elif isinstance(value, tuple):
+            row[field.name] = list(cast(tuple[object, ...], value))
+        else:
+            row[field.name] = value
     return row
 
 
@@ -64,7 +69,20 @@ def _convert(name: str, value: object, hint: object) -> object:
         if not isinstance(value, str):
             raise LedgerError(f"field {name} is not a string")
         return value
+    if get_origin(inner) is tuple:
+        return _tuple_of(name, value, get_args(inner))
     raise LedgerError(f"field {name} has an unsupported type {hint!r}")
+
+
+def _tuple_of(name: str, value: object, args: tuple[object, ...]) -> tuple[object, ...]:
+    if args != (str, Ellipsis):
+        raise LedgerError(f"field {name} has an unsupported tuple type")
+    if not isinstance(value, list):
+        raise LedgerError(f"field {name} is not a list")
+    items = cast(list[object], value)
+    if not all(isinstance(item, str) for item in items):
+        raise LedgerError(f"field {name} has a non-string item")
+    return tuple(cast(list[str], items))
 
 
 def record_id_of(value: object) -> str:
