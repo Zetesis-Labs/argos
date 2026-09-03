@@ -47,7 +47,9 @@ API / A2A → AgentOS gateway → workflow + equipo de agentes
   puerto neutral `S3ObjectStore`, que escribe en flujo calculando el hash, lee
   de forma acotada y firma URLs breves.
 - **Workers stateless** ejecutan tareas pesadas como extracción y OCR de PDF. No
-  son agentes, no se exponen por A2A y no toman decisiones de riesgo.
+  son agentes, no se exponen por A2A y no toman decisiones de riesgo. El de
+  documentos lee con pypdfium2 y solo pasa por Tesseract las páginas sin texto
+  utilizable.
 - **LiteLLM** es la única pasarela a modelos y **Langfuse** recibe trazas sin
   contenido sensible.
 
