@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from argos.core.keys import extraction_manifest_key, extraction_text_key
 from argos.core.ledger import (
     ChunkDraft,
     ExtractionDraft,
@@ -126,6 +125,7 @@ class ExtractedChunk:
 
 @dataclass(frozen=True)
 class ExtractionResult:
+    extraction_id: str
     text_object: StoredObject
     manifest_object: StoredObject
     sha256: str
@@ -151,13 +151,13 @@ async def complete_extraction(
         return Skipped("unknown document")
     now = services.clock.now()
     expires_at = now + services.policy.retention.full_content
-    extraction_id = services.ids.new_id()
+    extraction_id = result.extraction_id
     text_artifact = Artifact(
         id=services.ids.new_id(),
         tenant_id=job.tenant_id,
         case_id=job.case_id,
         bucket=services.bucket,
-        key=extraction_text_key(job.tenant_id, job.case_id, extraction_id),
+        key=result.text_object.key,
         state=ArtifactState.AVAILABLE,
         sha256=result.text_object.sha256,
         size=result.text_object.size,
@@ -171,7 +171,7 @@ async def complete_extraction(
         tenant_id=job.tenant_id,
         case_id=job.case_id,
         bucket=services.bucket,
-        key=extraction_manifest_key(job.tenant_id, job.case_id, extraction_id),
+        key=result.manifest_object.key,
         state=ArtifactState.AVAILABLE,
         sha256=result.manifest_object.sha256,
         size=result.manifest_object.size,
