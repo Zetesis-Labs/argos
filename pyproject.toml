@@ -10,6 +10,10 @@ dependencies = [
     "agno[mcp,openai,os,surrealdb]>=3.0,<3.1",
     "httpx>=0.28,<0.29",
     "nats-py>=2.15,<2.16",
+    "pillow>=12.3,<12.4",
+    "pypdfium2>=5.13,<5.14",
+    "pytesseract>=0.3,<0.4",
+    "zstandard>=0.25,<0.26",
     "openinference-instrumentation-agno>=1.0,<1.1",
     "opentelemetry-exporter-otlp-proto-http>=1.44,<1.45",
     "opentelemetry-sdk>=1.44,<1.45",
@@ -22,6 +26,7 @@ bootstrap-db = "argos.devtools.bootstrap_db:main"
 bootstrap-bus = "argos.devtools.bootstrap_bus:main"
 bootstrap-store = "argos.devtools.bootstrap_store:main"
 dispatcher = "argos.services.dispatcher:main"
+worker = "argos.services.worker:main"
 spec-check = "argos.devtools.spec_check:main"
 
 [build-system]
@@ -68,3 +73,9 @@ files = ["argos", "tests"]
 python_version = "3.12"
 strict = true
 disallow_any_explicit = true
+
+# Estas librerías no publican tipos. Se usan solo en su adaptador y tras un
+# `cast` al Protocol que declara lo que Argos necesita de ellas.
+[[tool.mypy.overrides]]
+module = ["pypdfium2.*", "pytesseract.*"]
+ignore_missing_imports = true

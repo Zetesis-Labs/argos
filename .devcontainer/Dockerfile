@@ -7,6 +7,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git jq libatomic1 \
+        tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
