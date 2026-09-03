@@ -296,6 +296,9 @@ class SurrealLedger:
             {"entity": entity_id},
         )
 
+    async def warning(self, warning_id: str) -> OfficialWarning | None:
+        return await self._one(OfficialWarning, "warning", warning_id)
+
     async def warnings_for(self, kind: EntityKind, value: str) -> list[OfficialWarning]:
         return await self._many(
             OfficialWarning,

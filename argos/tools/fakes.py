@@ -299,6 +299,10 @@ class InMemoryLedger:
         links.sort(key=lambda row: row.created_at)
         return links
 
+    async def warning(self, warning_id: str) -> OfficialWarning | None:
+        row = self._rows.get(("warning", warning_id))
+        return row if isinstance(row, OfficialWarning) else None
+
     async def warnings_for(self, kind: EntityKind, value: str) -> list[OfficialWarning]:
         warnings = [
             row

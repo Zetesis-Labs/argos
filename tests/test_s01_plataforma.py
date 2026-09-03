@@ -167,9 +167,13 @@ async def test_anonymous_mcp_gets_no_data(settings: Settings) -> None:
 
 async def test_mcp_accepts_compose_hostname(settings: Settings) -> None:
     """S01.5 el MCP acepta el hostname del compose."""
+    compose_settings = replace(settings, surreal_url="http://surrealdb:8000")
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(
-            settings.mcp_url, json=MCP_INITIALIZE, headers=MCP_HEADERS, auth=settings.root_auth
+            compose_settings.mcp_url,
+            json=MCP_INITIALIZE,
+            headers=MCP_HEADERS,
+            auth=compose_settings.root_auth,
         )
     assert response.status_code == 200, response.text[:200]
 
@@ -256,3 +260,23 @@ async def test_published_dev_ports_bind_only_to_loopback() -> None:
     published_ports = re.findall(r'^\s+-\s+"([^"\n]+:\d+)"\s*$', compose, re.MULTILINE)
     assert published_ports
     assert all(mapping.startswith("127.0.0.1:") for mapping in published_ports), published_ports
+
+
+def test_openai_is_the_only_configurable_model_provider() -> None:
+    """S01.11 OpenAI es el único proveedor de modelos configurable."""
+    model_config = Path(".devcontainer/litellm/config.yaml").read_text(encoding="utf-8")
+    compose = Path(".devcontainer/docker-compose.yml").read_text(encoding="utf-8")
+    example = Path(".env.example").read_text(encoding="utf-8")
+    devcontainer = Path(".devcontainer/devcontainer.json").read_text(encoding="utf-8")
+
+    assert "model_name: mock" in model_config
+    assert "model_name: gpt-5.6-terra" in model_config
+    assert "model: openai/gpt-5.6-terra" in model_config
+    assert "api_key: os.environ/OPENAI_API_KEY" in model_config
+    assert compose.count("path: .env") == 2 and "OPENAI_API_KEY=" in example
+    assert 'OPENAI_API_KEY: ""' in compose
+    assert "ANALYSIS_MODEL=gpt-5.6-terra" in example
+
+    provider_config = "\n".join((model_config, compose, example, devcontainer)).lower()
+    assert "anthropic" not in provider_config
+    assert "claude-" not in provider_config

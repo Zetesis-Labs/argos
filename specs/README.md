@@ -38,16 +38,25 @@ el código.
 | [S01](S01-plataforma.md) | Base verificada: SurrealDB/MCP, LiteLLM y Langfuse | 0 | constitución §2, §7, §11–§12 |
 | [S02](S02-agentos-workers.md) | AgentOS, A2A, NATS, RustFS y worker de documentos | 1 | W1, W2, W5; R1, R8, R9, R12, R15–R29; constitución §3–§12 |
 
-S01 tiene casos y tests verdes. S02 está en implementación: sus casos `S02.n`
-se numeran a la vez que sus tests, en el orden de implantación de su §14, y los
-criterios de aceptación que aún no tienen caso son trabajo pendiente.
+S01 y S02 están implementadas y verificadas. S02 tiene 55 casos anclados; los
+últimos cargan advertencias exclusivamente sintéticas para demostrar la consulta
+de registros sin adelantar la ingesta real de S07 y arrancan todos los procesos
+desde el perfil local `services`.
 
 Fases previstas (una spec técnica por vertical, se crean al empezar la fase):
 
 | Fase | Vertical | Spec prevista |
 |---|---|---|
-| 1 | AgentOS y clúster de agentes: A2A, NATS, RustFS y worker de documentos | S02 (arquitectura aprobada; casos pendientes) |
+| 1 | AgentOS y clúster de agentes: A2A, NATS, RustFS y worker de documentos | S02 (implementada) |
 | 2 | URL a veredicto: análisis de dominio, puntuación, redactor, servicio | S03 identificadores, S04 dominio, S05 puntuación, S06 veredicto |
 | 3 | Registros oficiales: ingesta CNMV e I-SCAN, consulta FCA, cadena de clones | S07 fuentes |
 | 4 | Memoria y revisión: grafo compartido de entidades, vínculos `same_actor`, casos previos, revisión del curador (W4, R10, R13, R29) y exploración de la memoria | S08 memoria y revisión |
 | 5 | Captura de pantalla y canal Telegram | S09 multimodal, S10 canales |
+
+## Decisiones de dirección
+
+- Argos debe funcionar completo en local, sin depender de conocimiento remoto.
+- El conocimiento curado se versiona en Git y se carga en SurrealDB para que los
+  agentes lo consulten localmente.
+- Un dashboard local del devcontainer podrá facilitar operación, curación y
+  conversación mediante AG-UI. No tiene todavía fase ni spec técnica asignada.

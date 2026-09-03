@@ -56,9 +56,9 @@ implementada hasta que sus casos de aceptación tengan test y código.
 - Cuando la app llama a `http://surrealdb:8000/mcp` desde su contenedor
 - Entonces recibe 200 y no 403 por `Host` no permitido
 
-## S01.6 LiteLLM responde al modelo mock con coste y sin claves de proveedor
+## S01.6 LiteLLM responde al modelo mock con coste y sin clave de OpenAI
 
-- Dado LiteLLM arrancado sin `ANTHROPIC_API_KEY` ni `OPENAI_API_KEY`
+- Dado LiteLLM arrancado sin `OPENAI_API_KEY`
 - Cuando se pide una completion al modelo `mock` con la master key
 - Entonces responde el texto del mock y la cabecera `x-litellm-response-cost`
   es mayor que cero
@@ -98,3 +98,14 @@ por `traceId`.
 - Cuando publica un puerto para acceder desde el host
 - Entonces el puerto se vincula a `127.0.0.1` y no queda expuesto en todas las
   interfaces de red
+
+## S01.11 OpenAI es el único proveedor de modelos configurable
+
+- Dado un checkout sin claves de proveedor
+- Cuando el operador arranca la plataforma o decide activar un modelo real
+- Entonces `mock` sigue disponible sin coste para el arranque reproducible y
+  LiteLLM ofrece `gpt-5.6-terra` únicamente mediante `OPENAI_API_KEY`; el compose
+  y el ejemplo de entorno no aceptan claves ni modelos de otros proveedores, y
+  `ANALYSIS_MODEL` permite seleccionar el modelo real desde
+  `.devcontainer/.env` sin incluir la clave en Git; ningún proceso de Argos
+  recibe la clave del proveedor

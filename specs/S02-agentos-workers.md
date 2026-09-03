@@ -437,9 +437,14 @@ reintento visible.
 
 ## 14. Desarrollo y despliegue
 
-El compose de S02 añadirá NATS JetStream, RustFS, el worker (Python, en este
-repositorio), dispatcher, resumer, case analyzer y janitor a la plataforma S01.
-Todos los puertos publicados al host seguirán en loopback.
+El compose contiene NATS JetStream, RustFS y un contenedor de aplicación con el
+código del worker, dispatcher, resumer, case analyzer, gateway y janitor. El
+perfil `services` prepara el entorno con una operación idempotente —dependencias
+Python bloqueadas, esquema, topología JetStream, bucket y conocimiento sintético
+versionado— y después mantiene cada proceso en un servicio independiente. No
+requiere ejecutar comandos manuales dentro del contenedor ni disponer de un
+`.devcontainer/.env`; los valores por defecto son locales y el modelo es `mock`.
+Todos los puertos publicados al host siguen en loopback.
 Redis no será dependencia de código de Argos. Las credenciales se documentan en
 `.env.example` con valores locales y se inyectan por secretos en despliegue.
 
@@ -507,6 +512,9 @@ La implantación se divide sin cambiar estas fronteras:
 - Un veredicto `partial` sin señales lleva nivel `undetermined` y acciones.
 - El agente de documentos no dispone de herramienta para crear ni reprocesar
   trabajos.
+- Un checkout limpio arranca la plataforma y los procesos de Argos con el
+  perfil `services`; la preparación es idempotente y ningún paso exige una
+  dependencia instalada en el host aparte de Docker y Compose.
 
 ## 16. Casos anclados
 
@@ -1031,3 +1039,29 @@ Por eso la comprobación mira la fila, no el código de respuesta.
   trabajo en cola más viejo, el outbox pendiente y los casos esperando; el
   servicio recibe 403 y las métricas no contienen identificadores de caso ni
   contenido (S02 §13; R16)
+
+## S02.54 Las advertencias sintéticas de demostración se cargan de forma idempotente
+
+- Dado un fixture de advertencias exclusivamente sintéticas con identificadores
+  estables, regulador, URL de origen, entidad, estado y fecha de captura
+- Cuando el operador ejecuta `seed-demo-warnings` dos veces
+- Entonces cada advertencia existe una sola vez en `warning`, las filas ya
+  iguales no se reescriben, una consulta del agente de registros devuelve la
+  coincidencia vigente con su regulador, URL y fecha, y una advertencia sin los
+  metadatos exigidos por R11 se rechaza antes de escribir (R3, R11, R17;
+  constitución §6, §13)
+
+## S02.55 El perfil de servicios prepara y ejecuta Argos sin pasos manuales
+
+- Dado un checkout del repositorio sin `.devcontainer/.env` y con los volúmenes
+  locales vacíos
+- Cuando el operador ejecuta `docker compose -f .devcontainer/docker-compose.yml
+  --profile services up -d --build`
+- Entonces una preparación idempotente sincroniza las dependencias bloqueadas,
+  aplica el esquema, declara JetStream, crea el bucket y carga el conocimiento
+  sintético versionado antes de arrancar `gateway`, `dispatcher`, `worker`,
+  `resumer`, `analyzer` y `janitor` como procesos independientes; el gateway usa
+  el modelo `mock` por defecto y su único puerto publicado escucha en loopback;
+  SurrealDB y NATS reservados para tests evitan que esos procesos consuman o
+  modifiquen una ejecución de `pytest` dentro del mismo devcontainer
+  (constitución §11–§14)

@@ -169,19 +169,25 @@ nuevo.
 - Si el artefacto completo ya caducó, se responde con el veredicto y la evidencia
   conservada y se avisa de que el original ya no está disponible.
 
-### W3 · Ingesta de fuentes oficiales
+### W3 · Curar fuentes oficiales
 
-**Inicio**: una vez al día o a petición del curador.
+**Inicio**: el curador solicita actualizar una fuente o revisa una propuesta
+generada de forma programada.
 
 1. Se crea un trabajo por fuente. Cada fuente se descarga respetando límite,
    caché e identificación del cliente.
 2. Se normaliza cada entrada: regulador, entidad, identificadores, tipo,
    condición de clon, fecha de publicación, URL y fecha de captura.
-3. Las entradas nuevas se añaden; las existentes se actualizan sin perder su
-   primera captura; las ausentes se marcan retiradas, nunca se borran.
-4. Se registra inicio, fin, nuevas, actualizadas, retiradas e incidencia.
+3. El resultado se compara con el catálogo versionado: las entradas nuevas se
+   proponen, las existentes se actualizan sin perder su primera captura y las
+   ausentes se proponen como retiradas, nunca como borradas.
+4. El curador acepta o rechaza los cambios antes de incorporarlos al catálogo.
+5. Los cambios aceptados quedan revisables en Git y se cargan en la SurrealDB
+   local que consultan los agentes.
+6. Se registra inicio, fin, nuevas, actualizadas, retiradas e incidencia.
 
-**Fin**: la memoria refleja la última ingesta válida de cada fuente.
+**Fin**: el catálogo versionado y su proyección local reflejan la última
+actualización aceptada de cada fuente.
 
 **Caminos alternativos**
 
@@ -310,7 +316,8 @@ el trabajo queda en un estado terminal explicable.
   `false_positive` no crea reincidencia.
 - **R11 · Fuentes con fecha.** Toda advertencia lleva regulador, URL y fecha de
   captura. Sin captura no participa. Una retirada se conserva como histórica
-  pero no produce coincidencia vigente.
+  pero no produce coincidencia vigente. El catálogo aceptado se versiona en Git
+  y se consulta desde una proyección local.
 - **R12 · Estados del caso.** `received` pasa a `awaiting_processing` cuando
   tiene documentos pendientes y a `analyzing` cuando arranca su trabajo de
   análisis. Todo caso pasa por `analyzing` mediante un trabajo durable, también
@@ -332,8 +339,9 @@ el trabajo queda en un estado terminal explicable.
   extracciones. El curador opera todos los tenants: revisar, explorar, ingerir
   y reprocesar exigen su rol y cada acción queda atribuida y fechada.
 - **R17 · Escrituras acotadas.** W1 escribe caso, entidades, señales y veredicto;
-  W3 escribe advertencias e ingestas; W5 escribe documentos, trabajos,
-  extracciones y chunks; W4 escribe revisiones. W2 solo lee y escribe su sesión.
+  W3 propone cambios al catálogo curado y actualiza su proyección local; W5
+  escribe documentos, trabajos, extracciones y chunks; W4 escribe revisiones.
+  W2 solo lee y escribe su sesión.
 - **R18 · Retención.** Casos, señales y citas mínimas duran 12 meses; sesiones,
   originales, extracciones completas y chunks duran 30 días por defecto;
   advertencias oficiales e ingestas se conservan sin límite. El borrado elimina
@@ -407,9 +415,9 @@ el trabajo queda en un estado terminal explicable.
 
 ## 8. Representación gráfica
 
-Argos v1 no tiene interfaz pública propia. El cliente consume API o A2A y el
-curador usa la interfaz de operación del runtime para chat, casos, trabajos,
-ingestas y trazas. El estado mínimo visible de un documento es:
+Argos v1 se consume por API o A2A. Un dashboard local de desarrollo podrá
+presentar en el futuro sus capacidades y la conversación con el agente sin
+convertirse en un canal público. El estado mínimo visible de un documento es:
 
 ```text
 aceptado → en cola → procesando → extracción disponible → analizando → veredicto

@@ -200,6 +200,9 @@ asíncrono para los trabajos pesados.
 
 - Toda llamada a un LLM pasa por LiteLLM como endpoint compatible con OpenAI.
   Ningún SDK de proveedor aparece en el código de producto.
+- OpenAI es el único proveedor externo de modelos soportado. El checkout mantiene
+  `mock` para pruebas y arranque sin coste; una clave real solo vive en
+  `.devcontainer/.env` y nunca en Git.
 - Toda ejecución de agente, equipo, workflow o trabajo asíncrono propaga una
   correlación y traza a Langfuse por OpenTelemetry (OpenInference donde
   corresponda). El coste lo calcula LiteLLM; el runtime no lo duplica.
@@ -216,10 +219,14 @@ asíncrono para los trabajos pesados.
 - La plataforma objetivo levanta AgentOS, SurrealDB, NATS JetStream, RustFS,
   LiteLLM, Langfuse y sus dependencias dentro del compose. Tests, lint, tipos y
   servicio se ejecutan dentro; nunca desde el host.
+- Abrir el devcontainer o activar su perfil `services` prepara de forma
+  idempotente y arranca el producto completo, sin pasos manuales dentro del
+  contenedor ni dependencias del host aparte de Docker y Compose.
 - Las dependencias privadas de Langfuse están aisladas de los servicios de
   aplicación: que Langfuse use Redis u otro backend no autoriza a Argos a usarlo
   como cola o memoria.
-- Sin claves reales en el repositorio: `.env` local, `.env.example` versionado.
+- Sin claves reales en el repositorio: `.devcontainer/.env` local y
+  `.env.example` versionado.
 - Todos los puertos de desarrollo publicados al host escuchan en loopback.
 - Sin imágenes ni charts de Bitnami.
 
@@ -230,6 +237,16 @@ asíncrono para los trabajos pesados.
 - Ingesta respetuosa: `User-Agent` identificado, límite de peticiones, caché y
   nunca más de una pasada al día por fuente salvo reproceso explícito.
 - Una advertencia retirada se conserva con su estado. No se borra historia.
+- Argos funciona de forma completa en local y no depende de un servicio remoto
+  de conocimiento durante el análisis.
+- El conocimiento curado —advertencias, tipologías, patrones y guías de
+  actuación— tiene su fuente versionada en Git. SurrealDB es su proyección local
+  para consulta, no una fuente editorial independiente.
+- Un checkout contiene el conocimiento necesario para arrancar. Actualizarlo es
+  un cambio explícito y revisable del repositorio; nunca ocurre como efecto
+  oculto de analizar un caso.
+- Casos, documentos, señales privadas, revisiones de casos y datos de tenants no
+  forman parte del catálogo de conocimiento.
 
 ## 14. Higiene
 
