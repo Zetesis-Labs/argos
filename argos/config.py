@@ -83,6 +83,16 @@ class Settings:
         default_factory=lambda: environment_secret("LITELLM_MASTER_KEY", "sk-argos-master-key")
     )
     analysis_model: str = field(default_factory=lambda: environment("ANALYSIS_MODEL", "mock"))
+    gateway_port: int = field(default_factory=lambda: int(environment("GATEWAY_PORT", "7777")))
+    gateway_public_url: str = field(
+        default_factory=lambda: environment("GATEWAY_PUBLIC_URL", "http://localhost:7777")
+    )
+    gateway_identities: str = field(
+        default_factory=lambda: environment(
+            "GATEWAY_IDENTITIES",
+            "dev-service-token=dev:tenant-dev,dev-curator-token=curator:curator",
+        )
+    )
 
     langfuse_host: str = field(
         default_factory=lambda: environment("LANGFUSE_HOST", "http://langfuse-web:3000")
