@@ -1,0 +1,110 @@
+"""Puertos del núcleo (constitución §3). Cada uno tiene un adaptador real y un fake."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
+
+from argos.core.model import (
+    Artifact,
+    Attempt,
+    Case,
+    Chunk,
+    Document,
+    Extraction,
+    Job,
+    LedgerOp,
+    OutboxEntry,
+    Tenant,
+)
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+
+class IdSource(Protocol):
+    def new_id(self) -> str: ...
+
+
+class LedgerConflictError(Exception):
+    """Una escritura condicional no encontró la revisión esperada o violó una unicidad."""
+
+
+class LedgerError(RuntimeError):
+    pass
+
+
+class Ledger(Protocol):
+    async def commit(self, ops: Sequence[LedgerOp]) -> None: ...
+
+    async def tenant(self, tenant_id: str) -> Tenant | None: ...
+
+    async def case(self, case_id: str) -> Case | None: ...
+
+    async def case_by_notice(
+        self, tenant_id: str, notice_hash: str, *, since: datetime
+    ) -> Case | None: ...
+
+    async def artifact(self, artifact_id: str) -> Artifact | None: ...
+
+    async def document(self, document_id: str) -> Document | None: ...
+
+    async def document_by_hash(self, case_id: str, sha256: str) -> Document | None: ...
+
+    async def job(self, job_id: str) -> Job | None: ...
+
+    async def jobs_of_case(self, case_id: str) -> list[Job]: ...
+
+    async def jobs_with_expired_lease(self, now: datetime) -> list[Job]: ...
+
+    async def attempts(self, job_id: str) -> list[Attempt]: ...
+
+    async def outbox_entry(self, entry_id: str) -> OutboxEntry | None: ...
+
+    async def outbox_of_job(self, job_id: str) -> list[OutboxEntry]: ...
+
+    async def pending_outbox(self, now: datetime, *, limit: int) -> list[OutboxEntry]: ...
+
+    async def extraction(self, extraction_id: str) -> Extraction | None: ...
+
+    async def extractions_of_document(self, document_id: str) -> list[Extraction]: ...
+
+    async def chunks(self, extraction_id: str) -> list[Chunk]: ...
+
+    async def delete_tenant_data(self, tenant_id: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class StoredObject:
+    key: str
+    sha256: str
+    size: int
+
+
+class ObjectStore(Protocol):
+    """Puerto neutral S3 (S02 §10). Solo las operaciones que Argos necesita."""
+
+    async def put(self, key: str, content: AsyncIterable[bytes]) -> StoredObject: ...
+
+    async def stat(self, key: str) -> StoredObject | None: ...
+
+    async def delete(self, key: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class OutboundMessage:
+    subject: str
+    message_id: str
+    payload: bytes
+    headers: Mapping[str, str]
+
+
+class BusUnavailableError(Exception):
+    pass
+
+
+class MessageBus(Protocol):
+    async def publish(self, message: OutboundMessage) -> None: ...
