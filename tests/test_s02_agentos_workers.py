@@ -17,11 +17,13 @@ from agno.os import AgentOS
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from argos.agents.cluster import ANALYSIS_OF_AGENT, TEAM_NAME, build_cluster
 from argos.agents.tools import dumps, history_payload, manifest_payload, tools_for
-from argos.api.gateway import Gateway, build_app
-from argos.config import Settings
+from argos.api.gateway import Gateway, build_app, job_payload
+from argos.config import WORKLOADS, Settings
 from argos.core.agents import INVESTIGATION_TEAM, AgentName, Capability, capabilities_of
 from argos.core.analysis import (
     ACTIONS,
@@ -54,6 +56,7 @@ from argos.core.messages import (
 from argos.core.model import (
     TERMINAL_CASE_STATES,
     Analysis,
+    Artifact,
     ArtifactState,
     AttemptState,
     Case,
@@ -84,6 +87,7 @@ from argos.core.model import (
     entity_id,
 )
 from argos.core.notices import Notice
+from argos.core.observability import INTERNAL_ERROR, public_code
 from argos.core.policy import AnalysisPolicy, DocumentLimits, JobPolicy, Policy
 from argos.core.ports import (
     Clock,
@@ -101,13 +105,14 @@ from argos.core.reprocess import reprocess_options
 from argos.devtools.bootstrap_bus import declare_topology
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.devtools.bootstrap_store import build_store, ensure_bucket
+from argos.devtools.rehearse_store import rehearse
 from argos.platform.agno_db import build_agno_db
 from argos.platform.bus import JetStreamBus
-from argos.platform.ledger import SurrealLedger
+from argos.platform.ledger import ledger_for
 from argos.platform.objects import RustFsObjectStore
 from argos.platform.ocr import TesseractOcr
 from argos.platform.pdf import PdfiumReader
-from argos.platform.surreal import SurrealHttp
+from argos.platform.surreal import SurrealError, SurrealHttp
 from argos.services.dispatcher import run_dispatcher
 from argos.services.worker import run_worker
 from argos.tools.fakes import (
@@ -146,6 +151,7 @@ from argos.usecases.documents import (
     submit_document,
 )
 from argos.usecases.extract import PdfTools, extract_document
+from argos.usecases.janitor import enforce_retention, sweep_staging
 from argos.usecases.notices import NoticeOpened, NoticeRefused, open_notice_case
 from argos.usecases.queries import get_case, get_document, get_job
 from argos.usecases.resume import AnalysisQueued, resume_case
@@ -203,13 +209,7 @@ async def ledger(
     if request.param == "memory":
         yield InMemoryLedger()
         return
-    surreal = SurrealLedger(
-        url=f"{settings.surreal_ws_url}/rpc",
-        namespace=settings.ops_namespace,
-        database=settings.ops_database,
-        user=settings.surreal_ledger_user,
-        password=settings.surreal_ledger_password.get_secret_value(),
-    )
+    surreal = ledger_for(settings, "worker")
     await surreal.connect()
     try:
         yield surreal
@@ -354,7 +354,7 @@ async def test_ledger_schema_is_idempotent(settings: Settings) -> None:
     database = info[-1].result
     assert isinstance(database, dict)
     assert names_in(database.get("tables")) >= LEDGER_TABLES
-    assert settings.surreal_ledger_user in names_in(database.get("users"))
+    assert set(WORKLOADS) <= names_in(database.get("users"))
     version = await http.sql(
         "SELECT version FROM schema_version:current;",
         auth=settings.root_auth,
@@ -1792,13 +1792,7 @@ async def test_failed_extraction_degrades_and_empty_case_is_insufficient(
 async def surreal_services(
     anyio_backend: str, settings: Settings, ledger_schema: None, clock: FakeClock
 ) -> AsyncIterator[Services]:
-    surreal = SurrealLedger(
-        url=f"{settings.surreal_ws_url}/rpc",
-        namespace=settings.ops_namespace,
-        database=settings.ops_database,
-        user=settings.surreal_ledger_user,
-        password=settings.surreal_ledger_password.get_secret_value(),
-    )
+    surreal = ledger_for(settings, "worker")
     await surreal.connect()
     try:
         yield build_services(surreal, FakeBus(), clock, InMemoryObjectStore())
@@ -2270,3 +2264,314 @@ async def test_document_on_a_settled_case_creates_a_linked_case(
     assert unchanged is not None and unchanged.version == settled.verdict.version
     frozen = await services.ledger.case(case.id)
     assert frozen is not None and frozen.state is CaseState.VERDICT_ISSUED
+
+
+async def test_each_workload_has_its_own_identity(settings: Settings, ledger_schema: None) -> None:
+    """S02.47 cada workload tiene su identidad y la de los agentes es de solo lectura."""
+    await apply_schema(settings)
+    await apply_schema(settings)
+    http = SurrealHttp(settings.surreal_url)
+    info = await http.sql(
+        "INFO FOR DB;", auth=settings.root_auth, ns=settings.ops_namespace, db=settings.ops_database
+    )
+    database = info[-1].result
+    assert isinstance(database, dict)
+    users = names_in(database.get("users"))
+    assert set(WORKLOADS) <= users
+    assert "ledger" not in users
+
+    for name in WORKLOADS:
+        credentials = settings.workload(name)
+        token = await http.sign_in(
+            ns=settings.ops_namespace,
+            db=settings.ops_database,
+            user=credentials.user,
+            password=credentials.password.get_secret_value(),
+        )
+        assert token
+        with pytest.raises(SurrealError):
+            await http.sign_in(
+                ns=settings.ops_namespace,
+                db=settings.ops_database,
+                user=credentials.user,
+                password="otra-cosa",
+            )
+
+    agent_auth = await http.sign_in(
+        ns=settings.ops_namespace,
+        db=settings.ops_database,
+        user=settings.surreal_agent_user,
+        password=settings.surreal_agent_password.get_secret_value(),
+    )
+    readable = await http.sql(
+        "SELECT version FROM schema_version:current;",
+        auth=agent_auth,
+        ns=settings.ops_namespace,
+        db=settings.ops_database,
+    )
+    assert readable[-1].result
+
+    intruder = f"intruso{uuid4().hex[:8]}"
+    await http.sql(
+        f"CREATE tenant:{intruder} SET name = 'x', active = true, revision = 0;",
+        auth=agent_auth,
+        ns=settings.ops_namespace,
+        db=settings.ops_database,
+        raise_on_error=False,
+    )
+    written = await http.sql(
+        f"SELECT * FROM tenant:{intruder};",
+        auth=settings.root_auth,
+        ns=settings.ops_namespace,
+        db=settings.ops_database,
+    )
+    assert written[-1].result == []
+    escalation = await http.sql(
+        "DEFINE USER hacker ON DATABASE PASSWORD 'x' ROLES OWNER;",
+        auth=agent_auth,
+        ns=settings.ops_namespace,
+        db=settings.ops_database,
+        raise_on_error=False,
+    )
+    assert not escalation[-1].ok
+    assert "Not enough permissions" in str(escalation[-1].result)
+
+
+async def staged_artifact(
+    services: Services, tenant: Tenant, case: Case, *, expires_in: timedelta
+) -> Artifact:
+    now = services.clock.now()
+    artifact = Artifact(
+        id=services.ids.new_id(),
+        tenant_id=tenant.id,
+        case_id=case.id,
+        bucket=services.bucket,
+        key=probe_key(f"{uuid4().hex[:8]}.pdf"),
+        state=ArtifactState.UPLOADING,
+        sha256=None,
+        size=0,
+        mime="application/pdf",
+        created_at=now,
+        expires_at=now + expires_in,
+        revision=0,
+    )
+    await services.ledger.commit([Insert(artifact)])
+    await services.object_store.put(
+        artifact.key, chunks_of(PDF_BYTES), size=len(PDF_BYTES), mime="application/pdf"
+    )
+    return artifact
+
+
+async def test_janitor_sweeps_interrupted_uploads(
+    services: Services, tenant: Tenant, clock: FakeClock, store: InMemoryObjectStore
+) -> None:
+    """S02.48 el janitor borra la subida interrumpida y su objeto al vencer el TTL."""
+    case = await seed_case(services, tenant)
+    stale = await staged_artifact(services, tenant, case, expires_in=timedelta(hours=1))
+    fresh = await staged_artifact(services, tenant, case, expires_in=timedelta(hours=12))
+    submitted = await accepted_submission(services, tenant)
+    document = await services.ledger.document(submitted.document_id)
+    assert document is not None
+
+    clock.advance(timedelta(hours=2))
+    report = await sweep_staging(services)
+    assert report.swept == (stale.id,) and report.removed == (stale.key,)
+
+    swept = await services.ledger.artifact(stale.id)
+    assert swept is not None and swept.state is ArtifactState.DELETED
+    assert await store.stat(stale.key) is None
+    untouched = await services.ledger.artifact(fresh.id)
+    assert untouched is not None and untouched.state is ArtifactState.UPLOADING
+    assert await store.stat(fresh.key) is not None
+    live = await services.ledger.artifact(document.artifact_id)
+    assert live is not None and live.state is ArtifactState.AVAILABLE
+    assert await store.stat(live.key) is not None
+
+
+async def test_retention_removes_expired_content_only(
+    services: Services, tenant: Tenant, clock: FakeClock, store: InMemoryObjectStore
+) -> None:
+    """S02.49 la retención borra el contenido caducado sin dañar el caso."""
+    case = await seed_case(services, tenant)
+    await seed_extraction(services, tenant, case, texts=("fragmento caducado",))
+    job = await seed_analysis_job(services, tenant, case)
+    await analyzed_by(services, job.id, signals=(signal_of(clock, Analysis.PATTERNS),))
+    expired = (await services.ledger.documents_of_case(case.id))[0]
+    extraction = (await services.ledger.extractions_of_document(expired.id))[0]
+    for artifact_id in (
+        expired.artifact_id,
+        extraction.text_artifact_id,
+        extraction.manifest_artifact_id,
+    ):
+        await services.ledger.commit(
+            [
+                Insert(
+                    Artifact(
+                        id=artifact_id,
+                        tenant_id=tenant.id,
+                        case_id=case.id,
+                        bucket=services.bucket,
+                        key=probe_key(f"{artifact_id}.bin"),
+                        state=ArtifactState.AVAILABLE,
+                        sha256=hashlib.sha256(artifact_id.encode()).hexdigest(),
+                        size=len(PDF_BYTES),
+                        mime="application/pdf",
+                        created_at=clock.now(),
+                        expires_at=clock.now() + timedelta(days=30),
+                        revision=0,
+                    )
+                )
+            ]
+        )
+        stored = await services.ledger.artifact(artifact_id)
+        assert stored is not None
+        await services.object_store.put(
+            stored.key, chunks_of(PDF_BYTES), size=len(PDF_BYTES), mime="application/pdf"
+        )
+
+    clock.advance(TEST_POLICY.retention.full_content + timedelta(days=1))
+    survivor = await seed_case(services, tenant)
+    kept = await seed_extraction(services, tenant, survivor, texts=("fragmento vigente",))
+    report = await enforce_retention(services)
+    assert report.swept == (expired.id,)
+    assert len(report.removed) == 3
+
+    assert await services.ledger.chunks(extraction.id) == []
+    aged = await services.ledger.extraction(extraction.id)
+    assert aged is not None and aged.state is ExtractionState.EXPIRED
+    gone = await services.ledger.document(expired.id)
+    assert gone is not None and gone.state is DocumentState.EXPIRED
+    for key in report.removed:
+        assert await store.stat(key) is None
+
+    assert await services.ledger.case(case.id) is not None
+    assert len(await services.ledger.signals_of_case(case.id)) == 1
+    assert await services.ledger.current_verdict(case.id) is not None
+    assert len(await services.ledger.chunks(kept.extraction_id)) == 1
+
+    again = await enforce_retention(services)
+    assert again.swept == () and again.removed == ()
+
+
+async def test_store_survives_the_rehearsal(rustfs_store: RustFsObjectStore) -> None:
+    """S02.50 el almacén supera el ensayo de escritura, verificación, borrado y restauración."""
+    report = await rehearse(rustfs_store, key=probe_key(f"{uuid4().hex}.txt"))
+    assert report.written and report.verified and report.read_back
+    assert report.deleted and report.restored
+    assert report.passed
+    assert await rustfs_store.stat(report.key) is None
+
+
+async def test_public_errors_do_not_leak_internals(services: Services, tenant: Tenant) -> None:
+    """S02.51 el error público no filtra claves, SQL ni texto del documento."""
+    submitted = await accepted_submission(services, tenant)
+    claimed = await claim_attempt(
+        services,
+        JobMessage(job_id=submitted.job_id, attempt=1),
+        consumer=DOCUMENT_EXTRACTOR.durable,
+    )
+    assert isinstance(claimed, ClaimedAttempt)
+    leaked = (
+        "SELECT * FROM document WHERE key = "
+        "'tenants/t1/cases/c1/documents/d1/source.pdf' -- promesa de rentabilidad"
+    )
+    await fail_attempt(
+        services,
+        job_id=submitted.job_id,
+        attempt_number=1,
+        kind=FailureKind.PERMANENT,
+        code=leaked,
+    )
+
+    stored = await services.ledger.job(submitted.job_id)
+    assert stored is not None and stored.internal_error == leaked
+    view = await get_job(services, tenant_id=tenant.id, job_id=submitted.job_id)
+    assert view is not None
+    assert public_code(view.public_error) == INTERNAL_ERROR
+    rendered = dumps(job_payload(view))
+    assert "SELECT" not in rendered and "source.pdf" not in rendered
+    assert "rentabilidad" not in rendered
+    assert public_code(PdfEncryptedError.code) == PdfEncryptedError.code
+
+
+async def test_traces_correlate_without_sensitive_content(
+    services: Services, tenant: Tenant, tracing: TracerProvider, clock: FakeClock
+) -> None:
+    """S02.52 la traza correlaciona la cadena sin contenido sensible."""
+    collected = InMemorySpanExporter()
+    tracing.add_span_processor(SimpleSpanProcessor(collected))
+    marker = uuid4().hex
+    try:
+        submitted = await accepted_submission(services, tenant)
+        claimed = await claim_attempt(
+            services,
+            JobMessage(job_id=submitted.job_id, attempt=1),
+            consumer=DOCUMENT_EXTRACTOR.durable,
+        )
+        assert isinstance(claimed, ClaimedAttempt)
+        tools = PdfTools(reader=PdfiumReader(), ocr=RecordingOcr(text=f"texto {marker}"))
+        extracted = await extract_document(
+            services, tools, job=claimed.job, attempt=claimed.attempt
+        )
+        assert not isinstance(extracted, Skipped)
+
+        case = await services.ledger.case(submitted.case_id)
+        assert case is not None
+        analysis = await seed_analysis_job(services, tenant, case)
+        analyzing = await claimed_analysis(services, analysis)
+        await analyze_case(
+            services,
+            ScriptedInvestigator(Investigation(signals=(), entities=(), missing=())),
+            ScriptedNarrator(),
+            job=analyzing.job,
+            attempt=analyzing.attempt,
+        )
+        tracing.force_flush()
+        spans = [
+            span
+            for span in collected.get_finished_spans()
+            if span.name in ("argos.extract", "argos.analyze")
+        ]
+    finally:
+        collected.shutdown()
+
+    assert {span.name for span in spans} == {"argos.extract", "argos.analyze"}
+    attributes = [dict(span.attributes or {}) for span in spans]
+    assert {str(found["argos.correlation_id"]) for found in attributes} == {case.correlation_id}
+    assert all(found["argos.tenant_id"] == tenant.id for found in attributes)
+    assert all(found["argos.case_id"] == submitted.case_id for found in attributes)
+    extraction = next(found for found in attributes if found["argos.pages"])
+    assert extraction["argos.bytes"] == len(PDF_BYTES)
+    assert extraction["argos.document_id"] == submitted.document_id
+
+    rendered = json.dumps(attributes, default=str, ensure_ascii=False)
+    assert marker not in rendered
+    assert "source.pdf" not in rendered and "tenants/" not in rendered
+    assert "SELECT" not in rendered
+
+
+async def test_metrics_are_curator_only(
+    client: httpx.AsyncClient, services: Services, tenant: Tenant, clock: FakeClock
+) -> None:
+    """S02.53 las métricas mínimas salen del libro y solo las ve el curador."""
+    submitted = await accepted_submission(services, tenant)
+    await seed_analysis_job(services, tenant, await seed_case(services, tenant))
+    clock.advance(timedelta(minutes=5))
+
+    denied = await client.get("/metrics", headers=bearer(SERVICE_TOKEN))
+    anonymous = await client.get("/metrics")
+    assert denied.status_code == 403 and anonymous.status_code == 401
+
+    seen = await client.get("/metrics", headers=bearer(CURATOR_TOKEN))
+    assert seen.status_code == 200
+    metrics = seen.json()
+    assert metrics["jobs"][f"{JobType.DOCUMENT_EXTRACT}.{JobState.QUEUED}"] >= 1
+    assert metrics["jobs"][f"{JobType.CASE_ANALYZE}.{JobState.QUEUED}"] >= 1
+    assert metrics["oldest_queued_seconds"] >= 300
+    assert metrics["pending_outbox"] >= 1
+    assert metrics["awaiting_documents"] >= 1
+    assert metrics["failed"] == 0
+
+    rendered = seen.text
+    assert submitted.case_id not in rendered and submitted.job_id not in rendered
+    assert tenant.id not in rendered
