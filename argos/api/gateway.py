@@ -27,14 +27,17 @@ from argos.core.capabilities import (
     GATEWAY_CAPABILITIES,
     HEALTH_PATH,
     MESSAGES_PATH,
+    METRICS_PATH,
     CapabilityName,
     agent_card,
     capability,
 )
 from argos.core.identity import Identity, bearer_token, resolve
 from argos.core.notices import Notice
+from argos.core.observability import public_code
 from argos.core.ports import CaseAdvisor
 from argos.core.reprocess import ReprocessRefused
+from argos.platform.spans import span
 from argos.usecases.deps import Services
 from argos.usecases.documents import DocumentAccepted, DocumentRejected, DocumentUpload
 from argos.usecases.documents import submit_document as submit_document_case
@@ -46,6 +49,7 @@ from argos.usecases.gateway import (
     reprocess_document,
 )
 from argos.usecases.notices import NoticeRefused
+from argos.usecases.observability import collect_metrics
 from argos.usecases.queries import CaseView, JobView, VerdictSummary, get_case, get_job
 
 UPLOAD_CHUNK = 64 * 1024
@@ -97,7 +101,7 @@ def job_payload(view: JobView) -> dict[str, object]:
         "type": str(view.type),
         "state": str(view.state),
         "attempt": view.attempt,
-        "public_error": view.public_error,
+        "public_error": None if view.public_error is None else public_code(view.public_error),
     }
 
 
@@ -184,6 +188,14 @@ async def analyze(gateway: Gateway, request: Request, identity: Identity) -> Res
 async def submit(gateway: Gateway, request: Request, identity: Identity) -> Response:
     if identity.tenant_id is None:
         return refusal("identity.not_a_tenant", status=403)
+    with span(
+        "argos.gateway.submit_document",
+        {"argos.tenant_id": identity.tenant_id, "argos.identity": identity.name},
+    ):
+        return await _submit(gateway, request, identity.tenant_id, identity.name)
+
+
+async def _submit(gateway: Gateway, request: Request, tenant_id: str, caller: str) -> Response:
     form = await request.form()
     upload = form_upload(form.get("file"))
     if upload is None:
@@ -191,13 +203,13 @@ async def submit(gateway: Gateway, request: Request, identity: Identity) -> Resp
     accepted = await submit_document_case(
         gateway.services,
         DocumentUpload(
-            tenant_id=identity.tenant_id,
+            tenant_id=tenant_id,
             case_id=form_text(form.get("case_id")),
             filename=upload.filename or "",
             declared_mime=upload.content_type or "",
             size=upload.size or 0,
             content=upload_chunks(upload),
-            correlation_id=form_text(form.get("correlation_id")) or identity.name,
+            correlation_id=form_text(form.get("correlation_id")) or caller,
         ),
     )
     if isinstance(accepted, DocumentRejected):
@@ -388,8 +400,13 @@ def build_app(gateway: Gateway) -> FastAPI:
     async def messages(request: Request) -> Response:
         return await serve(gateway, request, message)
 
+    async def metrics() -> JSONResponse:
+        collected = await collect_metrics(gateway.services)
+        return JSONResponse(content=collected.as_dict())
+
     app.add_api_route(CARD_PATH, card, methods=["GET"])
     app.add_api_route(MESSAGES_PATH, messages, methods=["POST"])
+    app.add_api_route(METRICS_PATH, metrics, methods=["GET"])
     for spec, endpoint in (
         (capability(CapabilityName.ANALYZE_NOTICE), notices),
         (capability(CapabilityName.SUBMIT_DOCUMENT), documents),

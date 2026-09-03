@@ -30,6 +30,8 @@ worker = "argos.services.worker:main"
 resumer = "argos.services.resumer:main"
 analyzer = "argos.services.analyzer:main"
 gateway = "argos.api.main:main"
+janitor = "argos.services.janitor:main"
+rehearse-store = "argos.devtools.rehearse_store:main"
 spec-check = "argos.devtools.spec_check:main"
 
 [build-system]

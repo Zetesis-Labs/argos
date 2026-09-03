@@ -17,7 +17,7 @@ from argos.platform.agno_db import build_agno_db
 from argos.platform.bus import JetStreamBus
 from argos.platform.clock import SystemClock
 from argos.platform.ids import TimeOrderedIds
-from argos.platform.ledger import SurrealLedger
+from argos.platform.ledger import ledger_for
 from argos.services.runtime import Sleep, Stop, stop_on_signals
 from argos.usecases.analysis import analyze_case
 from argos.usecases.consumers import ClaimedAttempt, Skipped, claim_attempt, fail_attempt
@@ -115,13 +115,7 @@ async def run_analyzer(
 
 
 async def serve(settings: Settings, policy: Policy, *, interval: float) -> None:
-    ledger = SurrealLedger(
-        url=f"{settings.surreal_ws_url}/rpc",
-        namespace=settings.ops_namespace,
-        database=settings.ops_database,
-        user=settings.surreal_ledger_user,
-        password=settings.surreal_ledger_password.get_secret_value(),
-    )
+    ledger = ledger_for(settings, "analyzer")
     bus = JetStreamBus(settings.nats_url, policy=policy.jobs)
     await ledger.connect()
     await bus.connect()
