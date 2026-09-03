@@ -55,11 +55,18 @@ class ExtractionPolicy:
 
 
 @dataclass(frozen=True)
+class AnalysisPolicy:
+    chunk_budget: int = 8
+    budget: timedelta = timedelta(seconds=60)
+
+
+@dataclass(frozen=True)
 class Policy:
     documents: DocumentLimits = DocumentLimits()
     notices: NoticeLimits = NoticeLimits()
     retention: Retention = Retention()
     jobs: JobPolicy = JobPolicy()
     extraction: ExtractionPolicy = ExtractionPolicy()
+    analysis: AnalysisPolicy = AnalysisPolicy()
     extractor_version: str = "pdf-text-v1"
     extraction_options: str = "{}"
