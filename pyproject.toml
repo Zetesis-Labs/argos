@@ -29,6 +29,7 @@ dispatcher = "argos.services.dispatcher:main"
 worker = "argos.services.worker:main"
 resumer = "argos.services.resumer:main"
 analyzer = "argos.services.analyzer:main"
+gateway = "argos.api.main:main"
 spec-check = "argos.devtools.spec_check:main"
 
 [build-system]
