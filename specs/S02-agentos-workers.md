@@ -4,8 +4,8 @@
 pendientes.
 
 Esta vertical convierte la base S01 en un AgentOS capaz de coordinar agentes
-especialistas y trabajos asíncronos. Cubre W1, W2 y W5; R8, R12, R15–R28; y la
-constitución §3–§4, §6–§12.
+especialistas y trabajos asíncronos. Cubre W1, W2 y W5; R1, R8, R9, R12,
+R15–R29; y la constitución §3–§4, §6–§12.
 
 La numeración `S02.n` se asignará junto con los tests que fallen al iniciar la
 implementación. Hasta entonces, este documento fija decisiones y criterios de
@@ -74,11 +74,13 @@ son dependencias de observabilidad, no componentes del estado de Argos.
 | **MCP de operaciones** | Ofrecer herramientas por capacidad, tenant y caso | Entregar SurrealQL general al agente de producto |
 | **SurrealDB argos/ops** | Ser verdad de casos, grafo, trabajos, intentos, chunks y outbox | Guardar PDFs o extracciones completas |
 | **SurrealDB agno/sessions** | Persistir sesiones y memoria propia del runtime | Ser verdad operacional del caso |
-| **Outbox dispatcher** | Publicar comandos y eventos confirmados y marcar su entrega | Crear o cerrar trabajos de negocio por sí mismo |
+| **Outbox dispatcher** | Publicar comandos y eventos confirmados, marcar su entrega y recuperar arrendamientos vencidos de intentos | Cerrar trabajos con resultados propios: solo aplica las transiciones deterministas de R21 |
 | **NATS JetStream** | Entregar comandos y eventos referenciados | Ser la única copia del estado o transportar documentos |
 | **Document worker** | Reclamar, verificar, extraer, persistir y anunciar | Conversar, puntuar o conservar estado local durable |
 | **RustFS** | Guardar originales y derivados privados | Resolver autorización de negocio sin SurrealDB |
-| **Workflow resumer** | Consumir eventos, releer estado y reanudar el caso | Confiar en el contenido del evento como fuente de verdad |
+| **Workflow resumer** | Consumir eventos de documento, releer estado y crear el trabajo de análisis cuando el caso no tiene más documentos pendientes | Confiar en el contenido del evento como fuente de verdad o ejecutar el análisis él mismo |
+| **Case analyzer** (`case-analyzer-v1`) | Consumir `case.analyze`, reclamar el intento y ejecutar `verdict_workflow` hasta un estado terminal | Mover el caso sin un intento reclamado |
+| **Janitor** | Borrar artefactos `uploading` caducados y ejecutar la retención por referencias | Borrar por prefijo o sin comprobar referencias vivas |
 
 ## 4. Catálogo inicial de agentes
 
@@ -89,7 +91,7 @@ son dependencias de observabilidad, no componentes del estado de Argos.
 | `domain_agent` | Dominios | RDAP, certificados y reputación | señales técnicas fechadas |
 | `patterns_agent` | Texto autorizado | catálogo de patrones | señales con cita y posición |
 | `memory_agent` | Identificadores y tenant | consultas MCP de reincidencia | apariciones y revisiones previas |
-| `document_agent` | Caso y documento | crear/consultar/reprocesar trabajo | referencias y estado; nunca texto completo |
+| `document_agent` | Caso y documento | consulta de trabajos, manifiesto y chunks autorizados | estado, estructura del documento y selección de fragmentos para otros especialistas; nunca crea ni reprocesa trabajos |
 | `verdict_writer` | nivel calculado y señales | guía de acciones | explicación; no puede modificar el nivel |
 | `conversation_agent` | pregunta, caso y sesión | lectura de veredicto y memoria autorizada | respuesta sin mutar señales ni nivel |
 
@@ -103,8 +105,8 @@ El gateway publica capacidades, no la topología interna:
 
 | Capacidad | Tipo | Respuesta |
 |---|---|---|
-| `analyze_notice` | síncrona con límite | caso y veredicto o estado parcial |
-| `submit_document` | asíncrona | caso, documento, trabajo y `queued` |
+| `analyze_notice` | síncrona con límite | caso y veredicto o estado parcial; si el presupuesto vence sin estado terminal, el caso en curso |
+| `submit_document` | asíncrona | caso, documento, trabajo (nuevo o existente) y su estado |
 | `get_job` | consulta | estado público, intento y referencias disponibles |
 | `get_case` | consulta | estado y veredicto cuando existe |
 | `ask_case` | sesión | respuesta apoyada en evidencia persistida |
@@ -119,6 +121,13 @@ Los agentes especialistas y workers no publican Agent Card ni endpoint A2A. Un
 trabajo largo finaliza la llamada de envío tras su aceptación. El cliente usa
 `get_job`, `get_case` o una notificación referenciada.
 
+`analyze_notice` no ejecuta el análisis dentro de la llamada: valida R1, aplica
+R9, crea caso, trabajo `case.analyze` y comando de outbox en una transacción y
+espera el estado terminal hasta el presupuesto de R15. Si el proceso que
+atendía la llamada muere, el intento vence, se reencola y el cliente recupera
+el caso con `get_case`. La creación y el reproceso de trabajos son casos de uso
+del gateway, nunca herramientas de un agente.
+
 ## 6. Modelo operacional en SurrealDB
 
 La jerarquía obligatoria es:
@@ -126,20 +135,30 @@ La jerarquía obligatoria es:
 ```text
 tenant → case → document → extraction → chunk
                   └──────→ job → attempt
-case → entity → signal/evidence
+                  └──────→ verdict (versionado)
+case → signal/evidence
+case → entity ← case de otro tenant      (la entidad es compartida)
+entity ↔ entity                          (same_actor)
 transaction → outbox_entry
 ```
 
 Reglas del modelo:
 
-- toda fila de negocio lleva tenant y las consultas lo filtran antes de devolver
-  contenido;
-- todo documento pertenece al menos a un caso; una extracción pertenece a una
-  versión concreta del documento;
+- toda fila de caso, documento, trabajo, intento, extracción, chunk, señal,
+  veredicto y revisión lleva tenant y las consultas lo filtran antes de
+  devolver contenido; las entidades, sus vínculos y las advertencias oficiales
+  son compartidas y a un tenant solo se le devuelven agregados (R29);
+- un documento pertenece a un caso y una extracción a un documento; el mismo
+  hash en el mismo caso es el mismo documento, y en otro caso es otro documento
+  (R22);
 - el trabajo guarda tipo, versión, opciones normalizadas, estado, intento actual,
-  presupuesto, error público, error interno y correlación de traza;
-- cada intento conserva tiempos, consumidor y resultado para auditar entregas
-  repetidas;
+  máximo de intentos, arrendamiento (`lease_until`), error público, error
+  interno y correlación de traza;
+- cada intento conserva tiempos, consumidor, arrendamiento y resultado para
+  auditar entregas repetidas; su comando de outbox lleva `not_before` para el
+  backoff;
+- el caso conserva su veredicto vigente y las versiones superadas por un
+  reproceso;
 - los chunks conservan extracción, página, orden, rango y hash;
 - el outbox nace en la misma transacción que el trabajo o cambio que anuncia;
 - el evento recibido nunca mueve estados sin comparar primero la versión y el
@@ -156,10 +175,17 @@ impide reanudarlo.
 - Cada workload de producción tiene identidad distinta: gateway, dispatcher,
   resumer, worker y cada clase de agente que necesite permisos diferentes.
 - Los agentes llaman herramientas MCP de negocio (`get_case_context`,
-  `find_registry_matches`, `find_entity_history`, `submit_document_job`,
-  `get_extraction_chunks`); no reciben la herramienta de consulta general como
-  interfaz normal de producto.
+  `find_registry_matches`, `find_entity_history`, `get_document_job`,
+  `get_extraction_manifest`, `get_extraction_chunks`); no reciben la herramienta
+  de consulta general como interfaz normal de producto ni ninguna que cree,
+  reprocese o cierre trabajos.
 - El MCP valida identidad, tenant, capacidad, caso y campos de salida.
+  `find_entity_history` devuelve a un agente que trabaja para un tenant solo
+  agregados de la entidad (R29).
+- `get_extraction_chunks` entrega como máximo el presupuesto de chunks que fija
+  el workflow por llamada, y el runtime no persiste en `agno/sessions` los
+  mensajes de herramienta que los transportan: la sesión guarda `extraction_id`
+  y los identificadores de chunk.
 - El worker puede usar un adaptador directo tipado para transacciones y leases,
   con permisos sobre trabajos, intentos, documentos y extracciones; no puede
   leer sesiones ni revisar casos.
@@ -167,6 +193,8 @@ impide reanudarlo.
   distintas o URLs firmadas breves con operación, objeto y caducidad acotados.
 - El usuario genérico `agent` de S01 es una facilidad de desarrollo y debe
   dividirse antes de un despliegue productivo de S02.
+- Identidades de producción: gateway, dispatcher, resumer, case analyzer,
+  worker, janitor y cada clase de agente con permisos distintos.
 
 ## 8. Contrato NATS JetStream
 
@@ -176,7 +204,7 @@ impide reanudarlo.
 |---|---|---|---|
 | `ARGOS_JOBS` | `argos.jobs.document.extract.v1` | outbox dispatcher | `document-extractor-v1` |
 | `ARGOS_JOBS` | `argos.jobs.source.ingest.v1` | outbox dispatcher | `source-ingestor-v1` |
-| `ARGOS_JOBS` | `argos.jobs.case.analyze.v1` | outbox dispatcher | `case-analyzer-v1` |
+| `ARGOS_JOBS` | `argos.jobs.case.analyze.v1` (lo crean el gateway en `analyze_notice` y el resumer al cerrar el último documento) | outbox dispatcher | `case-analyzer-v1` |
 | `ARGOS_EVENTS` | `argos.events.document.extracted.v1` | outbox de extracción | `workflow-resumer-v1` |
 | `ARGOS_EVENTS` | `argos.events.document.failed.v1` | outbox de extracción | `workflow-resumer-v1` |
 | `ARGOS_EVENTS` | `argos.events.case.completed.v1` | outbox del workflow | consumidores autorizados |
@@ -210,18 +238,39 @@ leen de SurrealDB tras autenticar al workload. Las cabeceras pueden propagar
 La entrega es al menos una vez. No se promete exactamente una vez; se obtiene
 el efecto equivalente mediante estado durable e idempotencia.
 
+### Intentos y arrendamientos
+
+- Cada intento es una entrada de outbox propia con `{job_id, attempt}` y un
+  `not_before` que aplica el backoff; el dispatcher no publica antes de esa
+  hora.
+- Al reclamar, el consumidor fija `lease_until` en el trabajo y lo renueva
+  mientras trabaja.
+- Un fallo transitorio cierra el intento como `failed` y, en la misma
+  transacción, crea el intento siguiente y su comando si queda presupuesto; si
+  no, el trabajo pasa a `failed`.
+- El dispatcher recupera arrendamientos vencidos: un trabajo `running` cuyo
+  `lease_until` ya pasó cierra su intento como `lost` y se reencola igual, sin
+  tocar resultados. Si el intento perdido ya había confirmado su cierre, la
+  transición condicional lo detecta y no hace nada.
+- La reentrega propia de JetStream (sin ACK a tiempo) es solo red de seguridad:
+  una entrega cuyo `attempt` no es el actual se confirma sin efecto. La ventana
+  de deduplicación de JetStream es mayor que el arrendamiento del dispatcher.
+
 ## 9. Pipeline de documentos
 
 ### Ingreso
 
-1. El gateway valida credencial, tenant, PDF, tamaño, páginas y firma del archivo.
+1. El gateway valida credencial, tenant, extensión, tipo declarado, firma real
+   y tamaño. El caso destino existe sin veredicto o se crea nuevo; un caso con
+   veredicto recibe un caso vinculado (R12).
 2. Crea una referencia de artefacto `uploading` y calcula SHA-256 mientras
    transmite el original al almacén privado, sin cargarlo completo en memoria.
-3. En una transacción marca el artefacto `available`, registra documento, hash,
-   MIME, tamaño y caducidad, y busca una extracción reutilizable con el mismo
-   tenant, hash, versión y opciones. Nunca consulta coincidencias de otro tenant.
-4. Si existe una extracción, la vincula al caso sin encolar. Si no, crea trabajo
-   y comando de outbox dentro de esa misma transacción.
+3. En una transacción busca en el mismo caso un documento con el mismo hash.
+   Nunca consulta otros casos ni otros tenants.
+4. Si existe, responde con el documento y el trabajo existentes y deja el
+   objeto recién subido para el janitor. Si no, marca el artefacto `available`,
+   registra documento, hash, MIME, tamaño y caducidad, crea trabajo y comando
+   de outbox y pone el caso en `awaiting_processing`, todo en esa transacción.
 5. Tras confirmar, el gateway responde aceptación sin esperar al worker; el
    dispatcher publica el comando de forma independiente y recuperable.
 
@@ -233,6 +282,9 @@ objeto y queda igualmente cubierto por ese recolector.
 
 1. El worker reclama el trabajo y obtiene acceso breve al objeto exacto.
 2. Verifica hash, tipo y tamaño de nuevo; una discrepancia es fallo permanente.
+   Completa la validación profunda de R19: cifrado, corrupción, contenido
+   activo no admitido y exceso de páginas son fallos permanentes con código
+   estable que dejan el documento `rejected`.
 3. Extrae texto y metadatos por página. Solo aplica OCR a páginas sin texto útil.
 4. Normaliza saltos y orden, pero conserva relación página/posición.
 5. Genera texto completo comprimido, manifiesto y chunks deterministas.
@@ -242,11 +294,17 @@ objeto y queda igualmente cubierto por ese recolector.
 
 ### Reanudación
 
-El resumer recibe la referencia, relee el trabajo y el caso, comprueba tenant y
-estado y entrega al workflow solo chunks autorizados. Si la sesión original ya
-no existe, crea una ejecución de reanudación correlacionada con el caso. El
-workflow pasa de `awaiting_processing` a `analyzing` y aplica W1. La salida sigue
-disponible por `get_case` aunque no exista cliente conectado.
+El resumer recibe la referencia, relee el trabajo y el caso y comprueba tenant y
+estado. Si el caso no tiene más documentos pendientes, crea el trabajo
+`case.analyze` y su comando en una transacción; si los tiene, confirma y espera
+al siguiente evento. El case analyzer reclama ese intento, pasa el caso de
+`awaiting_processing` a `analyzing`, obtiene solo chunks autorizados y aplica
+W1 dentro de una ejecución correlacionada con el caso, exista o no la sesión
+original. Si el proceso muere, el arrendamiento vence y el trabajo se
+reentrega. Si la extracción falló de forma terminal y el caso tiene otra
+entrada analizable, el análisis arranca igual y el veredicto es `partial`; sin
+otra entrada, el caso termina `failed`. La salida sigue disponible por
+`get_case` aunque no exista cliente conectado.
 
 ## 10. Artefactos en RustFS
 
@@ -286,10 +344,13 @@ cambiar agentes, workflows ni trabajos.
   inconsistente son permanentes.
 - Los reintentos usan backoff y un máximo configurable. Agotado, el estado
   `failed` de SurrealDB actúa como DLQ operable.
-- Reprocesar crea un trabajo nuevo vinculado al anterior y, si corresponde, una
-  nueva versión de extracción. No se resetea ni borra historia.
+- Reprocesar es un comando del curador: crea un trabajo nuevo vinculado al
+  anterior y, si corresponde, una nueva versión de extracción; devuelve un caso
+  `failed` o `partial` a `awaiting_processing` y conserva el veredicto previo
+  como versión superada. No se resetea ni borra historia.
 - Un evento duplicado, tardío o fuera de orden no puede retroceder el estado del
-  caso ni reemplazar una extracción más reciente.
+  caso ni reemplazar una extracción más reciente. Esa transición hacia atrás
+  solo existe como comando del curador.
 
 ## 12. Privacidad, retención y borrado
 
@@ -299,7 +360,10 @@ cambiar agentes, workflows ni trabajos.
   existen referencias vivas y borra objetos exactos; después deja evidencia de
   la operación sin conservar contenido.
 - Ni payloads NATS, sesiones Agno, logs ni trazas contienen el documento o texto
-  completo.
+  completo. La sesión no persiste los mensajes de herramienta que transportan
+  chunks; las observaciones de modelo en Langfuse llevan modelo, tokens, coste,
+  duración e identificadores, con entradas y salidas ocultas por la
+  instrumentación. La imagen del aviso sigue la misma regla.
 - Los mensajes de error públicos no incluyen claves de objeto, SQL, stack traces
   ni texto del documento.
 - Un borrado de tenant invalida accesos y elimina sus datos siguiendo el mismo
@@ -327,8 +391,9 @@ reintento visible.
 
 ## 14. Desarrollo y despliegue
 
-El compose de S02 añadirá NATS JetStream, RustFS, el worker, dispatcher y resumer
-a la plataforma S01. Todos los puertos publicados al host seguirán en loopback.
+El compose de S02 añadirá NATS JetStream, RustFS, el worker (Python, en este
+repositorio), dispatcher, resumer, case analyzer y janitor a la plataforma S01.
+Todos los puertos publicados al host seguirán en loopback.
 Redis no será dependencia de código de Argos. Las credenciales se documentan en
 `.env.example` con valores locales y se inyectan por secretos en despliegue.
 
@@ -336,12 +401,13 @@ La implantación se divide sin cambiar estas fronteras:
 
 1. esquema de trabajos, intentos, artefactos, extracciones, chunks y outbox;
 2. puertos y fakes tipados, sin `Any`, validados por mypy y pyright estrictos;
-3. NATS, dispatcher y consumidores idempotentes;
+3. NATS, dispatcher (outbox y arrendamientos) y consumidores idempotentes;
 4. RustFS y `S3ObjectStore` con streaming;
 5. worker de PDF y OCR;
 6. AgentOS, agentes, Team, Workflow y herramientas MCP acotadas;
 7. gateway API/A2A, reanudación y pruebas de reinicio;
-8. observabilidad, retención y endurecimiento de credenciales.
+8. observabilidad con enmascarado, janitor (staging y retención) y
+   endurecimiento de credenciales.
 
 ## 15. Criterios de aceptación que se convertirán en casos S02.n
 
@@ -376,3 +442,22 @@ La implantación se divide sin cambiar estas fronteras:
   restauración antes de usarse en producción; Argos no depende de Object Lock
   como única protección.
 - Las trazas correlacionan toda la cadena sin incluir contenido sensible.
+- Enviar el mismo PDF al mismo caso devuelve el documento y el trabajo
+  existentes; enviarlo a otro caso crea otro documento y otra extracción.
+- Un worker que muere con un intento abierto: al vencer el arrendamiento el
+  trabajo vuelve a `queued` con un intento nuevo, o a `failed` si agotó el
+  presupuesto, y ningún resultado a medias cuenta.
+- `analyze_notice` deja caso y trabajo `case.analyze` en una transacción; si el
+  proceso se reinicia a mitad del análisis, el caso termina igualmente y
+  `get_case` lo devuelve.
+- Enviar un documento a un caso con veredicto crea un caso vinculado y no
+  modifica el veredicto.
+- Reprocesar un caso `failed` lo devuelve a `awaiting_processing` y conserva el
+  veredicto anterior como versión superada.
+- Tras un análisis con chunks, `agno/sessions` no contiene el texto sintético
+  del fixture y ninguna observación de Langfuse lo contiene.
+- `find_entity_history` desde el tenant B sobre una entidad vista solo por el
+  tenant A devuelve agregados y ningún identificador de caso, cita ni tenant.
+- Un veredicto `partial` sin señales lleva nivel `undetermined` y acciones.
+- El agente de documentos no dispone de herramienta para crear ni reprocesar
+  trabajos.
