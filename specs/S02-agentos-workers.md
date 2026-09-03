@@ -679,3 +679,45 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
   `tenants/{t}/cases/{c}/documents/{d}/source.pdf`, el objeto existe con el
   tamaño y el tipo del original y su contenido es byte a byte el enviado (W5.2;
   R23; S02 §10)
+
+## S02.23 El worker extrae el texto embebido, sube los derivados y cierra la extracción
+
+- Dado un PDF con texto y su trabajo reclamado
+- Cuando el worker lo extrae
+- Entonces el trabajo queda `completed`; existe una extracción `available` con
+  una página, cero páginas con OCR y la versión de extractor del trabajo; sus
+  chunks conservan página y orden; el texto completo comprimido y el manifiesto
+  están en el almacén bajo las claves de esa extracción; el manifiesto declara
+  el origen y el tamaño de cada página y las posiciones de los chunks; queda un
+  evento `argos.events.document.extracted.v1` pendiente y el OCR no se invocó
+  (W5.4-5; R22, R23)
+
+## S02.24 Solo se aplica OCR a las páginas sin texto utilizable
+
+- Dado un PDF de dos páginas donde la primera lleva texto y la segunda es una
+  imagen escaneada
+- Cuando el worker lo extrae
+- Entonces el OCR se invoca exactamente una vez, la extracción declara dos
+  páginas y una con OCR, el chunk de la primera página viene del texto
+  incrustado y el de la segunda del reconocimiento, y el documento registra sus
+  dos páginas (W5.4; constitución §10)
+
+## S02.25 Un documento que el worker no puede leer termina en fallo permanente
+
+- Dado un PDF corrupto, uno cifrado, uno con más páginas de las admitidas o uno
+  cuyo objeto ya no coincide con el hash registrado
+- Cuando el worker intenta extraerlo
+- Entonces el trabajo termina `failed` con código público `pdf.damaged`,
+  `pdf.encrypted`, `pdf.too_many_pages` o `document.hash_mismatch`, el documento
+  queda `rejected`, no se crea extracción, el intento queda cerrado como fallo
+  permanente y hay un evento `argos.events.document.failed.v1` (R19, R21, R28;
+  S02 §11)
+
+## S02.26 El bucle del worker extrae lo que reclama y confirma lo que ya no le toca
+
+- Dado dos comandos entregados, uno de un trabajo que otro consumidor ya
+  reclamó
+- Cuando el worker ejecuta una pasada
+- Entonces extrae y cierra el suyo, confirma el otro sin trabajar, ninguna
+  entrega queda sin confirmar y el trabajo ajeno sigue como estaba (R21, R25;
+  S02 §8)

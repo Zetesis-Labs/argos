@@ -12,9 +12,10 @@ from uuid import uuid4
 
 import httpx
 import pytest
+import zstandard
 
 from argos.config import Settings
-from argos.core.keys import source_document_key
+from argos.core.keys import extraction_manifest_key, extraction_text_key, source_document_key
 from argos.core.ledger import ATTEMPTS_EXHAUSTED, LEASE_LOST
 from argos.core.messages import (
     CASE_COMPLETED_SUBJECT,
@@ -45,12 +46,13 @@ from argos.core.model import (
     command_entry_id,
 )
 from argos.core.notices import Notice
-from argos.core.policy import JobPolicy, Policy
+from argos.core.policy import DocumentLimits, JobPolicy, Policy
 from argos.core.ports import (
     Ledger,
     ObjectMetadata,
     ObjectSizeMismatchError,
     ObjectTooLargeError,
+    PdfEncryptedError,
     StoredObject,
 )
 from argos.devtools.bootstrap_bus import declare_topology
@@ -59,9 +61,20 @@ from argos.devtools.bootstrap_store import build_store, ensure_bucket
 from argos.platform.bus import JetStreamBus
 from argos.platform.ledger import SurrealLedger
 from argos.platform.objects import RustFsObjectStore
+from argos.platform.ocr import TesseractOcr
+from argos.platform.pdf import PdfiumReader
 from argos.platform.surreal import JsonValue, SurrealHttp
 from argos.services.dispatcher import run_dispatcher
-from argos.tools.fakes import FakeBus, FakeClock, InMemoryLedger, InMemoryObjectStore, SequentialIds
+from argos.services.worker import run_worker
+from argos.tools.fakes import (
+    FakeBus,
+    FakeClock,
+    InMemoryLedger,
+    InMemoryObjectStore,
+    RecordingOcr,
+    SequentialIds,
+    StubPdfReader,
+)
 from argos.usecases.consumers import (
     ClaimedAttempt,
     ExtractedChunk,
@@ -85,6 +98,7 @@ from argos.usecases.documents import (
     DocumentUpload,
     submit_document,
 )
+from argos.usecases.extract import PdfTools, extract_document
 from argos.usecases.notices import NoticeOpened, NoticeRefused, open_notice_case
 from argos.usecases.queries import get_case, get_document, get_job
 
@@ -529,6 +543,7 @@ async def test_transient_failure_retries_and_permanent_does_not(
 def extraction_result() -> ExtractionResult:
     text = "Aviso sintetico de prueba"
     return ExtractionResult(
+        extraction_id="extraction-under-test",
         text_object=StoredObject(key="text", sha256="a" * 64, size=120),
         manifest_object=StoredObject(key="manifest", sha256="b" * 64, size=80),
         sha256=hashlib.sha256(text.encode()).hexdigest(),
@@ -895,3 +910,198 @@ async def test_intake_writes_the_original_to_the_real_store(
     )
     assert await rustfs_store.read(artifact.key, limit=len(PDF_BYTES)) == PDF_BYTES
     await rustfs_store.delete(artifact.key)
+
+
+MIXED_PDF = (FIXTURES / "synthetic_mixed_pages.pdf").read_bytes()
+DAMAGED_PDF = b"%PDF-1.4\nesto no es un documento valido\n"
+
+
+def pdf_tools(ocr: RecordingOcr) -> PdfTools:
+    return PdfTools(reader=PdfiumReader(), ocr=ocr)
+
+
+async def claimed_extraction(services: Services, tenant: Tenant, data: bytes) -> ClaimedAttempt:
+    result = await submit_document(services, upload_of(tenant, data=data))
+    assert isinstance(result, DocumentAccepted)
+    return await claimed(services, result.job_id, 1, "worker-a")
+
+
+def decompressed(payload: bytes) -> str:
+    return zstandard.ZstdDecompressor().decompress(payload).decode()
+
+
+async def test_worker_extracts_embedded_text_and_closes_the_extraction(
+    services: Services, tenant: Tenant, store: InMemoryObjectStore
+) -> None:
+    """S02.23 el worker extrae el texto embebido, sube los derivados y cierra la extracción con su evento."""
+    ocr = RecordingOcr(text="no deberia usarse")
+    claim = await claimed_extraction(services, tenant, PDF_BYTES)
+
+    finished = await extract_document(
+        services, pdf_tools(ocr), job=claim.job, attempt=claim.attempt
+    )
+    assert not isinstance(finished, Skipped)
+    assert finished.state is JobState.COMPLETED
+    assert ocr.calls == []
+
+    extractions = await services.ledger.extractions_of_document(claim.job.document_id or "")
+    assert len(extractions) == 1
+    extraction = extractions[0]
+    assert (extraction.state, extraction.page_count, extraction.ocr_pages) == (
+        ExtractionState.AVAILABLE,
+        1,
+        0,
+    )
+    assert extraction.extractor_version == TEST_POLICY.extractor_version
+
+    chunks = await services.ledger.chunks(extraction.id)
+    assert [(c.page, c.position) for c in chunks] == [(1, 0)]
+    assert chunks[0].text == "Aviso sintetico de prueba"
+
+    text_artifact = await services.ledger.artifact(extraction.text_artifact_id)
+    manifest_artifact = await services.ledger.artifact(extraction.manifest_artifact_id)
+    assert text_artifact is not None and manifest_artifact is not None
+    assert text_artifact.key == extraction_text_key(tenant.id, claim.job.case_id, extraction.id)
+    assert manifest_artifact.key == extraction_manifest_key(
+        tenant.id, claim.job.case_id, extraction.id
+    )
+    stored_text = await store.read(text_artifact.key, limit=1 << 20)
+    assert stored_text is not None
+    assert decompressed(stored_text) == "Aviso sintetico de prueba"
+
+    stored_manifest = await store.read(manifest_artifact.key, limit=1 << 20)
+    assert stored_manifest is not None
+    described = json.loads(stored_manifest)
+    assert described["page_count"] == 1
+    assert described["ocr_pages"] == 0
+    assert described["pages"] == [{"number": 1, "source": "embedded", "characters": 25}]
+    assert [c["position"] for c in described["chunks"]] == [0]
+
+    events = [
+        entry
+        for entry in await services.ledger.outbox_of_job(claim.job.id)
+        if entry.kind is OutboxKind.EVENT
+    ]
+    assert [(e.subject, e.state) for e in events] == [
+        (DOCUMENT_EXTRACTED_SUBJECT, OutboxState.PENDING)
+    ]
+
+
+async def test_ocr_runs_only_on_pages_without_usable_text(
+    services: Services, tenant: Tenant
+) -> None:
+    """S02.24 solo se aplica OCR a las páginas sin texto utilizable y su texto entra en los chunks."""
+    ocr = RecordingOcr(TesseractOcr())
+    claim = await claimed_extraction(services, tenant, MIXED_PDF)
+
+    finished = await extract_document(
+        services, pdf_tools(ocr), job=claim.job, attempt=claim.attempt
+    )
+    assert not isinstance(finished, Skipped)
+    assert finished.state is JobState.COMPLETED
+    assert len(ocr.calls) == 1
+
+    extraction = (await services.ledger.extractions_of_document(claim.job.document_id or ""))[0]
+    assert (extraction.page_count, extraction.ocr_pages) == (2, 1)
+    chunks = await services.ledger.chunks(extraction.id)
+    assert [c.page for c in chunks] == [1, 2]
+    assert "texto incrustado" in chunks[0].text
+    assert "ESCANEADA" in chunks[1].text.upper()
+
+    document = await services.ledger.document(claim.job.document_id or "")
+    assert document is not None and document.page_count == 2
+
+
+@pytest.mark.parametrize(
+    ("scenario", "code"),
+    [
+        ("damaged", "pdf.damaged"),
+        ("encrypted", "pdf.encrypted"),
+        ("too_many_pages", "pdf.too_many_pages"),
+        ("hash_mismatch", "document.hash_mismatch"),
+    ],
+)
+async def test_unreadable_document_fails_permanently(
+    services: Services,
+    tenant: Tenant,
+    store: InMemoryObjectStore,
+    scenario: str,
+    code: str,
+) -> None:
+    """S02.25 un documento que el worker no puede leer termina en fallo permanente con código estable."""
+    payload = MIXED_PDF if scenario == "too_many_pages" else PDF_BYTES
+    if scenario == "damaged":
+        payload = DAMAGED_PDF
+    claim = await claimed_extraction(services, tenant, payload)
+    tools = pdf_tools(RecordingOcr())
+    running = services
+    if scenario == "encrypted":
+        tools = PdfTools(
+            reader=StubPdfReader(error=PdfEncryptedError("needs a password")),
+            ocr=RecordingOcr(),
+        )
+    if scenario == "too_many_pages":
+        running = replace(
+            services, policy=replace(TEST_POLICY, documents=DocumentLimits(max_pages=1))
+        )
+    if scenario == "hash_mismatch":
+        document = await services.ledger.document(claim.job.document_id or "")
+        assert document is not None
+        artifact = await services.ledger.artifact(document.artifact_id)
+        assert artifact is not None
+        other = b"%PDF-1.4\notros bytes distintos\n"
+        await store.put(artifact.key, chunks_of(other), size=len(other), mime="application/pdf")
+
+    finished = await extract_document(running, tools, job=claim.job, attempt=claim.attempt)
+    assert not isinstance(finished, Skipped)
+    assert (finished.state, finished.public_error) == (JobState.FAILED, code)
+
+    document = await services.ledger.document(claim.job.document_id or "")
+    assert document is not None and document.state is DocumentState.REJECTED
+    assert await services.ledger.extractions_of_document(document.id) == []
+    events = [
+        entry
+        for entry in await services.ledger.outbox_of_job(claim.job.id)
+        if entry.kind is OutboxKind.EVENT
+    ]
+    assert [e.subject for e in events] == [DOCUMENT_FAILED_SUBJECT]
+    attempts = await services.ledger.attempts(claim.job.id)
+    assert [(a.number, a.state, a.error_kind) for a in attempts] == [
+        (1, AttemptState.FAILED, FailureKind.PERMANENT)
+    ]
+
+
+async def test_worker_loop_extracts_and_acknowledges_every_delivery(
+    services: Services, tenant: Tenant, bus: FakeBus
+) -> None:
+    """S02.26 el bucle del worker extrae lo que reclama, confirma sin trabajar lo que ya no le toca y para cuando se le pide."""
+    mine = await submit_document(services, upload_of(tenant))
+    taken = await submit_document(services, upload_of(tenant))
+    assert isinstance(mine, DocumentAccepted) and isinstance(taken, DocumentAccepted)
+    await dispatch_once(services.dispatching)
+    await claimed(services, taken.job_id, 1, "otro-worker")
+
+    source = await bus.deliveries(DOCUMENT_EXTRACTOR)
+    naps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        naps.append(seconds)
+
+    ticks = await run_worker(
+        services,
+        pdf_tools(RecordingOcr()),
+        source,
+        consumer="worker-a",
+        stop=lambda: len(naps) >= 1,
+        sleep=sleep,
+        interval=0.1,
+    )
+
+    assert naps == [0.1]
+    assert [tick.extracted for tick in ticks] == [(mine.job_id,)]
+    assert [tick.skipped for tick in ticks] == [(taken.job_id,)]
+    extracted = await services.ledger.job(mine.job_id)
+    untouched = await services.ledger.job(taken.job_id)
+    assert extracted is not None and extracted.state is JobState.COMPLETED
+    assert untouched is not None and untouched.state is JobState.RUNNING
+    assert await source.fetch(limit=10, timeout=0.1) == []
