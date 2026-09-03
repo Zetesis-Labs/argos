@@ -7,6 +7,16 @@ from argos.core.ports import Clock, IdSource, Ledger, MessageBus, ObjectStore
 
 
 @dataclass(frozen=True)
+class Dispatching:
+    """Lo que necesita el dispatcher: nunca toca el almacén de objetos."""
+
+    ledger: Ledger
+    bus: MessageBus
+    clock: Clock
+    policy: Policy
+
+
+@dataclass(frozen=True)
 class Services:
     ledger: Ledger
     object_store: ObjectStore
@@ -15,3 +25,7 @@ class Services:
     ids: IdSource
     policy: Policy
     bucket: str
+
+    @property
+    def dispatching(self) -> Dispatching:
+        return Dispatching(ledger=self.ledger, bus=self.bus, clock=self.clock, policy=self.policy)

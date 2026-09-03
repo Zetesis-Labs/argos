@@ -14,7 +14,7 @@ from argos.core.ledger import (
 from argos.core.messages import MESSAGE_ID_HEADER, JobMessage, encode_job_message
 from argos.core.model import JobState, OutboxEntry, Update
 from argos.core.ports import BusUnavailableError, LedgerConflictError, OutboundMessage
-from argos.usecases.deps import Services
+from argos.usecases.deps import Dispatching
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ def outbound_message(entry: OutboxEntry) -> OutboundMessage:
     )
 
 
-async def dispatch_once(services: Services, *, limit: int = 50) -> DispatchReport:
+async def dispatch_once(services: Dispatching, *, limit: int = 50) -> DispatchReport:
     ledger = services.ledger
     published: list[str] = []
     failed: list[str] = []
@@ -63,7 +63,7 @@ class RecoveryReport:
     skipped: tuple[str, ...]
 
 
-async def recover_leases_once(services: Services) -> RecoveryReport:
+async def recover_leases_once(services: Dispatching) -> RecoveryReport:
     ledger = services.ledger
     now = services.clock.now()
     requeued: list[str] = []
