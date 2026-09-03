@@ -9,18 +9,26 @@ from typing import cast
 from surrealdb import AsyncSurreal
 from surrealdb.types import Value
 
+from argos.config import Settings
 from argos.core.model import (
     Artifact,
+    ArtifactState,
     Attempt,
     Case,
     CaseEntity,
+    CaseState,
     Chunk,
+    Delete,
     Document,
+    DocumentState,
     Entity,
     EntityKind,
     Extraction,
     Insert,
     Job,
+    JobCount,
+    JobState,
+    JobType,
     LedgerOp,
     LedgerRecord,
     OfficialWarning,
@@ -138,6 +146,8 @@ class SurrealLedger:
             params[f"c{index}"] = to_row(op.record)
             if isinstance(op, Insert):
                 statements.append(f"CREATE type::record($t{index}, $i{index}) CONTENT $c{index};")
+            elif isinstance(op, Delete):
+                statements.append(f"DELETE type::record($t{index}, $i{index});")
             else:
                 params[f"r{index}"] = op.record.revision - 1
                 statements.append(
@@ -294,6 +304,50 @@ class SurrealLedger:
             {"kind": kind.value, "value": value},
         )
 
+    async def stale_artifacts(self, now: datetime, *, limit: int) -> list[Artifact]:
+        return await self._many(
+            Artifact,
+            "SELECT * FROM artifact WHERE state = $state AND expires_at <= $now "
+            "ORDER BY expires_at LIMIT $limit;",
+            {"state": ArtifactState.UPLOADING.value, "now": now, "limit": limit},
+        )
+
+    async def expired_documents(self, now: datetime, *, limit: int) -> list[Document]:
+        return await self._many(
+            Document,
+            "SELECT * FROM document WHERE state = $state AND expires_at <= $now "
+            "ORDER BY expires_at LIMIT $limit;",
+            {"state": DocumentState.ACCEPTED.value, "now": now, "limit": limit},
+        )
+
+    async def job_counts(self) -> list[JobCount]:
+        rows = await self._query(
+            "SELECT type, state, count() AS total FROM job GROUP BY type, state;", {}
+        )
+        return [
+            JobCount(
+                type=JobType(str(row["type"])),
+                state=JobState(str(row["state"])),
+                count=int(str(row["total"])),
+            )
+            for row in rows
+        ]
+
+    async def oldest_queued_job(self) -> Job | None:
+        jobs = await self._many(
+            Job,
+            "SELECT * FROM job WHERE state = $state ORDER BY created_at LIMIT 1;",
+            {"state": JobState.QUEUED.value},
+        )
+        return jobs[0] if jobs else None
+
+    async def count_cases(self, states: Sequence[CaseState]) -> int:
+        rows = await self._query(
+            "SELECT count() AS total FROM case WHERE state IN $states GROUP ALL;",
+            {"states": [state.value for state in states]},
+        )
+        return int(str(rows[0]["total"])) if rows else 0
+
     async def signals_of_case(self, case_id: str) -> list[Signal]:
         return await self._many(
             Signal,
@@ -312,3 +366,15 @@ class SurrealLedger:
 
     async def delete_tenant_data(self, tenant_id: str) -> None:
         await self._query("\n".join(DELETE_TENANT_STATEMENTS), {"tenant": tenant_id})
+
+
+def ledger_for(settings: Settings, workload: str) -> SurrealLedger:
+    """Cada proceso entra con su propia identidad (S02 §7)."""
+    credentials = settings.workload(workload)
+    return SurrealLedger(
+        url=f"{settings.surreal_ws_url}/rpc",
+        namespace=settings.ops_namespace,
+        database=settings.ops_database,
+        user=credentials.user,
+        password=credentials.password.get_secret_value(),
+    )
