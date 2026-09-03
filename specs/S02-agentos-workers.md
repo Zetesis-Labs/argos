@@ -631,3 +631,51 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
   comando del intento 2 pasado su backoff, el bus recibió exactamente esos dos
   mensajes y el bucle termina cuando su condición de parada lo pide (R21, R25,
   R28)
+
+## S02.17 El bucket de artefactos se crea de forma idempotente y no sirve nada sin firma
+
+- Dado un RustFS recién arrancado
+- Cuando `bootstrap-store` se ejecuta dos veces y se escribe un objeto
+- Entonces el bucket existe, una petición sin firmar al bucket y otra al objeto
+  reciben 403, y el objeto sí se lee con credenciales (constitución §10; R8)
+
+## S02.18 Un objeto se escribe en flujo con su hash y se relee de forma acotada
+
+- Dado un contenido que llega en varios trozos
+- Cuando se escribe declarando su tamaño y su tipo y después se consulta
+- Entonces la escritura devuelve el SHA-256 del contenido completo y su tamaño
+  sin haberlo cargado entero en memoria; los metadatos devuelven tamaño y tipo;
+  la lectura acotada devuelve el contenido y falla si el límite es menor que el
+  objeto; una clave inexistente no tiene metadatos ni contenido (S02 §10)
+
+## S02.19 Un tamaño declarado que no coincide con lo subido no deja objeto utilizable
+
+- Dado un cuerpo más corto que el tamaño declarado
+- Cuando se intenta escribir
+- Entonces la escritura falla por discrepancia de tamaño y la clave sigue sin
+  objeto (W5.1, R19; S02 §9)
+
+## S02.20 Una URL firmada breve sirve solo su objeto y caduca
+
+- Dado un objeto escrito y otro distinto
+- Cuando se firma una URL de lectura para el primero, se reutiliza la firma del
+  segundo sobre la clave del primero, se firma una ya caducada y se pide sin
+  firma
+- Entonces solo la primera devuelve el contenido; las otras tres reciben 403
+  (constitución §10; R16)
+
+## S02.21 El borrado exacto elimina su objeto y deja intactos los demás
+
+- Dado dos objetos del almacén
+- Cuando se borra uno y se repite el borrado
+- Entonces ese objeto desaparece, el otro sigue disponible y borrar lo que ya
+  no está no falla (R18; S02 §12)
+
+## S02.22 El ingreso completo deja el original en el almacén real
+
+- Dado un tenant activo y un PDF sintético
+- Cuando se envía con el almacén RustFS en lugar del doble en memoria
+- Entonces el artefacto registrado apunta a
+  `tenants/{t}/cases/{c}/documents/{d}/source.pdf`, el objeto existe con el
+  tamaño y el tipo del original y su contenido es byte a byte el enviado (W5.2;
+  R23; S02 §10)
