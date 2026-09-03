@@ -158,7 +158,15 @@ Reglas del modelo:
   auditar entregas repetidas; su comando de outbox lleva `not_before` para el
   backoff;
 - el caso conserva su veredicto vigente y las versiones superadas por un
-  reproceso;
+  reproceso, y su marca de revisión (R13) con autor y fecha del último cambio;
+- la entidad, sus vínculos `same_actor` y las advertencias oficiales no llevan
+  tenant porque son memoria compartida; el vínculo entre un caso y una entidad
+  sí lo lleva, y es el único camino por el que un tenant llega a sus casos;
+- la señal guarda análisis de origen, código, fuerza y la evidencia mínima
+  (fuente, fecha de observación, valor y cita); sin los cuatro campos no
+  participa en la puntuación;
+- el veredicto guarda versión, nivel, desenlace, idioma, explicación, acciones
+  y qué faltó; el nivel lo escribe el núcleo determinista, nunca el redactor;
 - los chunks conservan extracción, página, orden, rango y hash;
 - el outbox nace en la misma transacción que el trabajo o cambio que anuncia;
 - el evento recibido nunca mueve estados sin comparar primero la versión y el
@@ -186,6 +194,11 @@ impide reanudarlo.
   el workflow por llamada, y el runtime no persiste en `agno/sessions` los
   mensajes de herramienta que los transportan: la sesión guarda `extraction_id`
   y los identificadores de chunk.
+- Los agentes que reciben fragmentos se ejecutan sin sesión persistida: la
+  durabilidad del análisis es el caso en `argos/ops`, no la sesión. La única
+  sesión que se guarda es la conversacional de W2, que lee veredicto y
+  evidencia y no tiene la herramienta de fragmentos. Así el fragmento no llega
+  a `agno/sessions` ni siquiera como mensaje de herramienta.
 - El worker puede usar un adaptador directo tipado para transacciones y leases,
   con permisos sobre trabajos, intentos, documentos y extracciones; no puede
   leer sesiones ni revisar casos.
@@ -721,3 +734,114 @@ reglas de la funcional que cubre; `spec-check` exige un test por caso.
 - Entonces extrae y cierra el suyo, confirma el otro sin trabajar, ninguna
   entrega queda sin confirmar y el trabajo ajeno sigue como estaba (R21, R25;
   S02 §8)
+
+## S02.27 El esquema de memoria compartida, señales y veredictos se aplica de forma idempotente
+
+- Dado una SurrealDB con el esquema anterior aplicado
+- Cuando `bootstrap-db` se ejecuta dos veces seguidas
+- Entonces `argos/ops` contiene además las tablas `entity`, `entity_link`,
+  `case_entity`, `warning`, `signal` y `verdict`, todas `SCHEMAFULL`; `entity`,
+  `entity_link` y `warning` no tienen campo `tenant_id` y `case_entity` sí;
+  `case` tiene su marca de revisión; y `schema_version:current` sube a la
+  versión que declara `bootstrap-db` (constitución §6, §7; R8, R13, R29)
+
+## S02.28 El núcleo determinista calcula el nivel conforme a R4
+
+- Dado conjuntos de señales con evidencia
+- Cuando `core.score` los puntúa con todos los análisis respondidos
+- Entonces una coincidencia oficial vigente sobre identificador fuerte da
+  `critical`; una reincidencia fuerte de un caso `confirmed` da `critical`; dos
+  señales fuertes de análisis distintos dan `high`; dos fuertes del mismo
+  análisis dan `medium`; una fuerte da `medium`; tres débiles dan `medium`; dos
+  débiles dan `low`; y ninguna señal da `low` (R4)
+
+## S02.29 Una señal sin evidencia no puntúa y un parcial nunca es low
+
+- Dado una señal sin fuente, otra sin fecha de observación y otra sin cita
+- Cuando se filtran antes de puntuar y después se puntúa un caso degradado
+- Entonces las tres se descartan; el mismo conjunto que daba `low` da `medium`
+  al estar degradado; un caso degradado sin ninguna señal da `undetermined`; y
+  todo nivel, `undetermined` incluido, trae acciones no vacías (R3, R5, R7)
+
+## S02.30 Cada agente declara solo sus herramientas y ninguna crea ni reprocesa trabajos
+
+- Dado el catálogo de agentes
+- Cuando se leen sus capacidades
+- Entonces están los ocho agentes de la constitución §8; el catálogo entero de
+  capacidades es de lectura y no contiene ninguna que cree, reprocese o cierre
+  trabajos; `document_agent` tiene exactamente trabajo, manifiesto y fragmentos;
+  `conversation_agent` no tiene la de fragmentos; y `investigation_team` agrupa
+  triaje, registros, dominio, patrones y memoria (constitución §4, §8; R16)
+
+## S02.31 Una herramienta rechaza al agente sin capacidad, a otro tenant y a otro caso
+
+- Dado un caso con documento y extracción de un tenant
+- Cuando `verdict_writer` pide fragmentos, un agente de documentos de otro tenant
+  los pide sobre ese caso, el del propio tenant los pide desde otro caso suyo y
+  se pide un identificador de extracción inexistente
+- Entonces las cuatro llamadas se rechazan con `tool.not_authorized`,
+  `case.not_found`, `extraction.not_found` y `extraction.not_found`; ninguna
+  devuelve contenido y ninguna herramienta acepta una consulta SurrealQL libre
+  (R16, R28)
+
+## S02.32 Los fragmentos se entregan por referencia y acotados al presupuesto
+
+- Dado una extracción con más fragmentos que el presupuesto por llamada
+- Cuando `document_agent` pide el manifiesto y después los fragmentos, dos veces
+  con su cursor
+- Entonces el manifiesto trae páginas, tamaños e identificadores de fragmento
+  pero ningún texto; la primera llamada devuelve como mucho el presupuesto con
+  su identificador y posición y un cursor; la segunda devuelve el resto sin
+  cursor (constitución §6; R8; S02 §7)
+
+## S02.33 find_entity_history devuelve al otro tenant solo agregados
+
+- Dado dos casos del tenant A sobre el mismo dominio, uno marcado `confirmed`
+- Cuando `memory_agent` del tenant B pregunta por ese dominio y después el del
+  tenant A pregunta por un dominio que nadie ha visto
+- Entonces B recibe el número de casos, la primera y la última vez que se vio y
+  que existe una revisión confirmada, sin identificadores de caso, citas ni
+  tenants; y el dominio desconocido devuelve un agregado vacío, no un error
+  (R29; constitución §6)
+
+## S02.34 El resumer crea el trabajo de análisis solo cuando no quedan documentos pendientes
+
+- Dado un caso con dos documentos aceptados
+- Cuando el resumer recibe el evento del primero, después el del segundo y
+  después una repetición del segundo
+- Entonces la primera entrega no crea trabajo de análisis; la segunda crea uno
+  `case.analyze` `queued` con su comando pendiente en el outbox; la repetición
+  se confirma sin crear otro; y el caso sigue en `awaiting_processing` (W5.5,
+  R12, R25; S02 §9)
+
+## S02.35 El case analyzer reclama el intento, pasa el caso a analyzing y emite el veredicto
+
+- Dado un caso con una extracción disponible y un trabajo `case.analyze`
+  entregado
+- Cuando el analizador lo ejecuta con un investigador que devuelve dos señales
+  fuertes de análisis distintos y después recibe la misma entrega otra vez
+- Entonces el caso pasa por `analyzing` y termina `verdict_issued` con un
+  veredicto versión 1 de nivel `high`, sus acciones y sus dos señales con
+  evidencia; las entidades citadas quedan en la memoria compartida vinculadas al
+  caso; el trabajo queda `completed` con un evento
+  `argos.events.case.completed.v1` pendiente; y la segunda entrega se confirma
+  sin crear una versión nueva (W1.4–8, R4, R8, R12, R25)
+
+## S02.36 Una extracción fallida degrada el veredicto y sin entrada analizable el caso es insufficient
+
+- Dado un caso con un documento extraído y otro cuyo trabajo terminó `failed`, y
+  otro caso sin ninguna extracción utilizable
+- Cuando el analizador ejecuta ambos
+- Entonces el primero termina `partial`, dice que faltó ese documento y su nivel
+  no es `low`; el segundo termina `insufficient` sin veredicto de riesgo y con
+  acciones que piden una entrada más completa (W1 caminos alternativos; R5, R12)
+
+## S02.37 El clúster real analiza con el modelo mock sin dejar texto en la sesión ni en la traza
+
+- Dado el `investigation_team` real sobre LiteLLM con el modelo `mock` y un caso
+  con una extracción cuyos fragmentos llevan un texto sintético único
+- Cuando el analizador ejecuta el caso dentro de una traza correlacionada
+- Entonces el equipo responde sin señales utilizables, el caso termina `partial`
+  con nivel `undetermined` y acciones; ninguna fila de `agno/sessions` contiene
+  ese texto; y ninguna observación de Langfuse de esa traza lo contiene
+  (constitución §4, §11; R5, R8)
