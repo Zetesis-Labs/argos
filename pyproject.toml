@@ -27,6 +27,8 @@ bootstrap-bus = "argos.devtools.bootstrap_bus:main"
 bootstrap-store = "argos.devtools.bootstrap_store:main"
 dispatcher = "argos.services.dispatcher:main"
 worker = "argos.services.worker:main"
+resumer = "argos.services.resumer:main"
+analyzer = "argos.services.analyzer:main"
 spec-check = "argos.devtools.spec_check:main"
 
 [build-system]
