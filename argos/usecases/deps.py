@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from argos.core.policy import Policy
-from argos.core.ports import Clock, IdSource, Ledger, MessageBus, ObjectStore
+from argos.core.ports import Clock, IdSource, Ledger, MessageBus, S3ObjectStore
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,7 @@ class Dispatching:
 @dataclass(frozen=True)
 class Services:
     ledger: Ledger
-    object_store: ObjectStore
+    object_store: S3ObjectStore
     bus: MessageBus
     clock: Clock
     ids: IdSource

@@ -25,7 +25,7 @@ from argos.core.model import (
     JobState,
     JobType,
 )
-from argos.core.ports import LedgerConflictError
+from argos.core.ports import LedgerConflictError, ObjectSizeMismatchError
 from argos.usecases.deps import Services
 from argos.usecases.streams import UploadTooLargeError, bounded, peek
 
@@ -135,12 +135,15 @@ async def submit_document(
 
     try:
         stored = await services.object_store.put(
-            key, bounded(content, services.policy.documents.max_bytes)
+            key,
+            bounded(content, services.policy.documents.max_bytes),
+            size=upload.size,
+            mime=checked.mime,
         )
     except UploadTooLargeError:
         await services.object_store.delete(key)
         return DocumentRejected("document.too_large")
-    if stored.size != upload.size:
+    except ObjectSizeMismatchError:
         await services.object_store.delete(key)
         return DocumentRejected("document.size_mismatch")
 

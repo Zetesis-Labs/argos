@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from argos.core.messages import JobMessage
@@ -85,14 +85,39 @@ class StoredObject:
     size: int
 
 
-class ObjectStore(Protocol):
+@dataclass(frozen=True)
+class ObjectMetadata:
+    key: str
+    size: int
+    mime: str
+
+
+class ObjectStoreError(RuntimeError):
+    pass
+
+
+class ObjectSizeMismatchError(ObjectStoreError):
+    """Lo subido no coincide con el tamaño declarado: no queda objeto utilizable."""
+
+
+class ObjectTooLargeError(ObjectStoreError):
+    pass
+
+
+class S3ObjectStore(Protocol):
     """Puerto neutral S3 (S02 §10). Solo las operaciones que Argos necesita."""
 
-    async def put(self, key: str, content: AsyncIterable[bytes]) -> StoredObject: ...
+    async def put(
+        self, key: str, content: AsyncIterable[bytes], *, size: int, mime: str
+    ) -> StoredObject: ...
 
-    async def stat(self, key: str) -> StoredObject | None: ...
+    async def read(self, key: str, *, limit: int) -> bytes | None: ...
+
+    async def stat(self, key: str) -> ObjectMetadata | None: ...
 
     async def delete(self, key: str) -> None: ...
+
+    def presigned_get(self, key: str, *, expires_in: timedelta) -> str: ...
 
 
 @dataclass(frozen=True)
