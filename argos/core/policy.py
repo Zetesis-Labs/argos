@@ -34,6 +34,10 @@ class JobPolicy:
     outbox_lease: timedelta = timedelta(seconds=30)
     backoff_base: timedelta = timedelta(seconds=30)
     backoff_factor: int = 4
+    # Mayor que `outbox_lease`: cubre al dispatcher que publicó y murió antes de marcarlo.
+    duplicate_window: timedelta = timedelta(minutes=5)
+    max_deliveries: int = 3
+    message_ttl: timedelta = timedelta(days=7)
 
     def backoff(self, failed_attempt: int) -> timedelta:
         multiplier = 1

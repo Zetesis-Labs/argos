@@ -8,6 +8,9 @@ from typing import cast
 
 from argos.core.model import JobType
 
+JOBS_STREAM = "ARGOS_JOBS"
+EVENTS_STREAM = "ARGOS_EVENTS"
+
 JOB_SUBJECTS: dict[JobType, str] = {
     JobType.DOCUMENT_EXTRACT: "argos.jobs.document.extract.v1",
     JobType.CASE_ANALYZE: "argos.jobs.case.analyze.v1",
@@ -52,6 +55,63 @@ def decode_job_message(payload: bytes) -> JobMessage:
     if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
         raise MalformedMessageError("attempt must be a positive integer")
     return JobMessage(job_id=job_id, attempt=attempt)
+
+
+@dataclass(frozen=True)
+class StreamSpec:
+    name: str
+    subjects: tuple[str, ...]
+    workqueue: bool
+
+
+@dataclass(frozen=True)
+class ConsumerSpec:
+    stream: str
+    durable: str
+    subjects: tuple[str, ...]
+
+
+STREAMS = (
+    StreamSpec(
+        name=JOBS_STREAM,
+        subjects=tuple(JOB_SUBJECTS[job_type] for job_type in JobType),
+        workqueue=True,
+    ),
+    StreamSpec(
+        name=EVENTS_STREAM,
+        subjects=(DOCUMENT_EXTRACTED_SUBJECT, DOCUMENT_FAILED_SUBJECT, CASE_COMPLETED_SUBJECT),
+        workqueue=False,
+    ),
+)
+
+DOCUMENT_EXTRACTOR = ConsumerSpec(
+    stream=JOBS_STREAM,
+    durable="document-extractor-v1",
+    subjects=(JOB_SUBJECTS[JobType.DOCUMENT_EXTRACT],),
+)
+CASE_ANALYZER = ConsumerSpec(
+    stream=JOBS_STREAM,
+    durable="case-analyzer-v1",
+    subjects=(JOB_SUBJECTS[JobType.CASE_ANALYZE],),
+)
+SOURCE_INGESTOR = ConsumerSpec(
+    stream=JOBS_STREAM,
+    durable="source-ingestor-v1",
+    subjects=(JOB_SUBJECTS[JobType.SOURCE_INGEST],),
+)
+WORKFLOW_RESUMER = ConsumerSpec(
+    stream=EVENTS_STREAM,
+    durable="workflow-resumer-v1",
+    subjects=(DOCUMENT_EXTRACTED_SUBJECT, DOCUMENT_FAILED_SUBJECT),
+)
+CONSUMERS = (DOCUMENT_EXTRACTOR, CASE_ANALYZER, SOURCE_INGESTOR, WORKFLOW_RESUMER)
+
+
+def stream_of(subject: str) -> str:
+    for stream in STREAMS:
+        if subject in stream.subjects:
+            return stream.name
+    raise ValueError(f"subject {subject} belongs to no stream")
 
 
 def failure_subject(job_type: JobType) -> str:
