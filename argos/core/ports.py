@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from argos.core.messages import JobMessage
 from argos.core.model import (
     Artifact,
     Attempt,
@@ -108,3 +109,24 @@ class BusUnavailableError(Exception):
 
 class MessageBus(Protocol):
     async def publish(self, message: OutboundMessage) -> None: ...
+
+
+class Delivery(Protocol):
+    """Una entrega concreta. Se confirma solo después de persistir (constitución §9)."""
+
+    @property
+    def message(self) -> JobMessage: ...
+
+    @property
+    def subject(self) -> str: ...
+
+    @property
+    def delivery_count(self) -> int: ...
+
+    async def ack(self) -> None: ...
+
+    async def nak(self) -> None: ...
+
+
+class MessageSource(Protocol):
+    async def fetch(self, *, limit: int, timeout: float) -> Sequence[Delivery]: ...
