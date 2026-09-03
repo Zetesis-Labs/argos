@@ -1,11 +1,11 @@
-"""Casos S02.1 a S02.11: libro de trabajos, outbox e ingreso de documentos y avisos."""
+"""Casos S02.1 a S02.37: libro de trabajos, outbox, documentos, herramientas y veredicto."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator
-from dataclasses import replace
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -13,11 +13,26 @@ from uuid import uuid4
 import httpx
 import pytest
 import zstandard
+from opentelemetry.sdk.trace import TracerProvider
 
+from argos.agents.cluster import ANALYSIS_OF_AGENT, build_cluster
+from argos.agents.tools import dumps, history_payload, manifest_payload, tools_for
 from argos.config import Settings
+from argos.core.agents import INVESTIGATION_TEAM, AgentName, Capability, capabilities_of
+from argos.core.analysis import (
+    ACTIONS,
+    DraftEntity,
+    DraftSignal,
+    EntityHistory,
+    Evidence,
+    assess,
+    score,
+    usable,
+)
 from argos.core.keys import extraction_manifest_key, extraction_text_key, source_document_key
-from argos.core.ledger import ATTEMPTS_EXHAUSTED, LEASE_LOST
+from argos.core.ledger import ATTEMPTS_EXHAUSTED, LEASE_LOST, new_job
 from argos.core.messages import (
+    CASE_ANALYZER,
     CASE_COMPLETED_SUBJECT,
     CONSUMERS,
     DOCUMENT_EXTRACTED_SUBJECT,
@@ -31,23 +46,41 @@ from argos.core.messages import (
     decode_job_message,
 )
 from argos.core.model import (
+    Analysis,
     ArtifactState,
     AttemptState,
+    Case,
+    CaseEntity,
     CaseState,
+    Chunk,
+    Document,
     DocumentState,
+    Entity,
+    EntityKind,
+    Extraction,
     ExtractionState,
     FailureKind,
     Insert,
+    Job,
     JobState,
     JobType,
     OutboxKind,
     OutboxState,
+    ReviewState,
+    RiskLevel,
+    Strength,
     Tenant,
+    VerdictOutcome,
+    analysis_job_id,
+    case_entity_id,
     command_entry_id,
+    entity_id,
 )
 from argos.core.notices import Notice
-from argos.core.policy import DocumentLimits, JobPolicy, Policy
+from argos.core.policy import AnalysisPolicy, DocumentLimits, JobPolicy, Policy
 from argos.core.ports import (
+    Clock,
+    Investigation,
     Ledger,
     ObjectMetadata,
     ObjectSizeMismatchError,
@@ -55,15 +88,17 @@ from argos.core.ports import (
     PdfEncryptedError,
     StoredObject,
 )
+from argos.core.reports import investigation_prompt
 from argos.devtools.bootstrap_bus import declare_topology
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.devtools.bootstrap_store import build_store, ensure_bucket
+from argos.platform.agno_db import build_agno_db
 from argos.platform.bus import JetStreamBus
 from argos.platform.ledger import SurrealLedger
 from argos.platform.objects import RustFsObjectStore
 from argos.platform.ocr import TesseractOcr
 from argos.platform.pdf import PdfiumReader
-from argos.platform.surreal import JsonValue, SurrealHttp
+from argos.platform.surreal import SurrealHttp
 from argos.services.dispatcher import run_dispatcher
 from argos.services.worker import run_worker
 from argos.tools.fakes import (
@@ -72,9 +107,12 @@ from argos.tools.fakes import (
     InMemoryLedger,
     InMemoryObjectStore,
     RecordingOcr,
+    ScriptedInvestigator,
+    ScriptedNarrator,
     SequentialIds,
     StubPdfReader,
 )
+from argos.usecases.analysis import Analyzed, analyze_case, build_brief
 from argos.usecases.consumers import (
     ClaimedAttempt,
     ExtractedChunk,
@@ -101,6 +139,20 @@ from argos.usecases.documents import (
 from argos.usecases.extract import PdfTools, extract_document
 from argos.usecases.notices import NoticeOpened, NoticeRefused, open_notice_case
 from argos.usecases.queries import get_case, get_document, get_job
+from argos.usecases.resume import AnalysisQueued, resume_case
+from argos.usecases.tools import (
+    CASE_NOT_FOUND,
+    EXTRACTION_NOT_FOUND,
+    NOT_AUTHORIZED,
+    ChunkPage,
+    ManifestView,
+    ToolCaller,
+    ToolDenied,
+    find_entity_history,
+    get_extraction_chunks,
+    get_extraction_manifest,
+)
+from tests.support import names_in, wait_for_observations
 
 pytestmark = pytest.mark.anyio
 
@@ -109,6 +161,7 @@ type Store = RustFsObjectStore | InMemoryObjectStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PDF_BYTES = (FIXTURES / "synthetic_one_page.pdf").read_bytes()
+OTHER_PDF = (FIXTURES / "synthetic_mixed_pages.pdf").read_bytes()
 LEDGER_TABLES = {
     "tenant",
     "case",
@@ -120,7 +173,10 @@ LEDGER_TABLES = {
     "extraction",
     "chunk",
 }
-TEST_POLICY = Policy(jobs=JobPolicy(max_attempts=2))
+ANALYSES = tuple(ANALYSIS_OF_AGENT[member] for member in INVESTIGATION_TEAM)
+MEMORY_TABLES = {"entity", "entity_link", "case_entity", "warning", "signal", "verdict"}
+SHARED_TABLES = {"entity", "entity_link", "warning"}
+TEST_POLICY = Policy(jobs=JobPolicy(max_attempts=2), analysis=AnalysisPolicy(chunk_budget=2))
 
 
 @pytest.fixture(scope="session")
@@ -273,10 +329,6 @@ async def claimed(services: Services, job_id: str, attempt: int, consumer: str) 
     outcome = await claim_attempt(services, JobMessage(job_id, attempt), consumer=consumer)
     assert isinstance(outcome, ClaimedAttempt)
     return outcome
-
-
-def names_in(section: JsonValue | None) -> set[str]:
-    return set(section.keys()) if isinstance(section, dict) else set()
 
 
 async def test_ledger_schema_is_idempotent(settings: Settings) -> None:
@@ -1105,3 +1157,723 @@ async def test_worker_loop_extracts_and_acknowledges_every_delivery(
     assert extracted is not None and extracted.state is JobState.COMPLETED
     assert untouched is not None and untouched.state is JobState.RUNNING
     assert await source.fetch(limit=10, timeout=0.1) == []
+
+
+@dataclass(frozen=True)
+class SeededCase:
+    case_id: str
+    document_id: str
+    extraction_id: str
+    chunk_ids: tuple[str, ...]
+
+
+def evidence_of(clock: Clock, quote: str = "cita del fragmento") -> Evidence:
+    return Evidence(
+        source="registro oficial", observed_at=clock.now(), value="ejemplo.test", quote=quote
+    )
+
+
+def signal_of(
+    clock: Clock,
+    analysis: Analysis,
+    strength: Strength = Strength.STRONG,
+    *,
+    official: bool = False,
+    recidivism: bool = False,
+    evidence: Evidence | None = None,
+) -> DraftSignal:
+    return DraftSignal(
+        analysis=analysis,
+        code=f"{analysis}.indicio",
+        strength=strength,
+        evidence=evidence or evidence_of(clock),
+        official=official,
+        recidivism=recidivism,
+    )
+
+
+async def seed_case(
+    services: Services,
+    tenant: Tenant,
+    *,
+    state: CaseState = CaseState.AWAITING_PROCESSING,
+    review: ReviewState = ReviewState.UNREVIEWED,
+) -> Case:
+    now = services.clock.now()
+    case = Case(
+        id=services.ids.new_id(),
+        tenant_id=tenant.id,
+        state=state,
+        notice_hash=None,
+        language="es",
+        correlation_id=f"corr-{uuid4().hex[:8]}",
+        previous_case_id=None,
+        review_state=review,
+        reviewed_at=None,
+        reviewed_by=None,
+        created_at=now,
+        updated_at=now,
+        revision=0,
+    )
+    await services.ledger.commit([Insert(case)])
+    return case
+
+
+async def seed_extraction(
+    services: Services, tenant: Tenant, case: Case, *, texts: Sequence[str]
+) -> SeededCase:
+    now = services.clock.now()
+    expires = now + TEST_POLICY.retention.full_content
+    document = Document(
+        id=services.ids.new_id(),
+        tenant_id=tenant.id,
+        case_id=case.id,
+        artifact_id=services.ids.new_id(),
+        sha256=hashlib.sha256(case.id.encode()).hexdigest(),
+        mime="application/pdf",
+        size=1024,
+        page_count=len(texts),
+        state=DocumentState.ACCEPTED,
+        created_at=now,
+        expires_at=expires,
+        revision=0,
+    )
+    extraction = Extraction(
+        id=services.ids.new_id(),
+        tenant_id=tenant.id,
+        case_id=case.id,
+        document_id=document.id,
+        extractor_version=TEST_POLICY.extractor_version,
+        options=TEST_POLICY.extraction_options,
+        state=ExtractionState.AVAILABLE,
+        sha256=hashlib.sha256(b"extraction").hexdigest(),
+        page_count=len(texts),
+        ocr_pages=0,
+        text_artifact_id=services.ids.new_id(),
+        manifest_artifact_id=services.ids.new_id(),
+        created_at=now,
+        expires_at=expires,
+        revision=0,
+    )
+    chunks = [
+        Chunk(
+            id=services.ids.new_id(),
+            tenant_id=tenant.id,
+            extraction_id=extraction.id,
+            page=1,
+            position=position,
+            text=text,
+            sha256=hashlib.sha256(text.encode()).hexdigest(),
+            expires_at=expires,
+            revision=0,
+        )
+        for position, text in enumerate(texts)
+    ]
+    await services.ledger.commit(
+        [Insert(document), Insert(extraction), *(Insert(chunk) for chunk in chunks)]
+    )
+    return SeededCase(
+        case_id=case.id,
+        document_id=document.id,
+        extraction_id=extraction.id,
+        chunk_ids=tuple(chunk.id for chunk in chunks),
+    )
+
+
+async def seed_analysis_job(services: Services, tenant: Tenant, case: Case) -> Job:
+    job = new_job(
+        job_id=analysis_job_id(case.id, 1),
+        tenant_id=tenant.id,
+        case_id=case.id,
+        job_type=JobType.CASE_ANALYZE,
+        document_id=None,
+        now=services.clock.now(),
+        policy=TEST_POLICY.jobs,
+        extractor_version="",
+        options="{}",
+        correlation_id=case.correlation_id,
+    )
+    await services.ledger.commit([Insert(job)])
+    return job
+
+
+async def claimed_analysis(services: Services, job: Job) -> ClaimedAttempt:
+    claimed = await claim_attempt(
+        services, JobMessage(job_id=job.id, attempt=1), consumer=CASE_ANALYZER.durable
+    )
+    assert isinstance(claimed, ClaimedAttempt)
+    return claimed
+
+
+def caller_of(agent: AgentName, tenant: Tenant, case_id: str) -> ToolCaller:
+    return ToolCaller(agent=agent, tenant_id=tenant.id, case_id=case_id)
+
+
+async def test_memory_schema_is_idempotent(settings: Settings, ledger_schema: None) -> None:
+    """S02.27 el esquema de memoria compartida, señales y veredictos se aplica de forma idempotente."""
+    await apply_schema(settings)
+    await apply_schema(settings)
+    http = SurrealHttp(settings.surreal_url)
+    info = await http.sql(
+        "INFO FOR DB;", auth=settings.root_auth, ns=settings.ops_namespace, db=settings.ops_database
+    )
+    database = info[-1].result
+    assert isinstance(database, dict)
+    tables = names_in(database.get("tables"))
+    assert tables >= LEDGER_TABLES | MEMORY_TABLES
+
+    async def fields_of(table: str) -> set[str]:
+        described = await http.sql(
+            f"INFO FOR TABLE {table};",
+            auth=settings.root_auth,
+            ns=settings.ops_namespace,
+            db=settings.ops_database,
+        )
+        definition = described[-1].result
+        assert isinstance(definition, dict)
+        return names_in(definition.get("fields"))
+
+    for table in sorted(MEMORY_TABLES):
+        assert ("tenant_id" in await fields_of(table)) is (table not in SHARED_TABLES)
+    assert "review_state" in await fields_of("case")
+
+    version = await http.sql(
+        "SELECT version FROM schema_version:current;",
+        auth=settings.root_auth,
+        ns=settings.ops_namespace,
+        db=settings.ops_database,
+    )
+    rows = version[-1].result
+    assert isinstance(rows, list) and isinstance(rows[0], dict)
+    assert rows[0].get("version") == SCHEMA_VERSION
+
+
+def test_risk_levels_follow_r4(clock: FakeClock) -> None:
+    """S02.28 el núcleo determinista calcula el nivel conforme a R4."""
+    strong_registry = signal_of(clock, Analysis.REGISTRIES)
+    strong_domain = signal_of(clock, Analysis.DOMAIN)
+    weak = signal_of(clock, Analysis.PATTERNS, Strength.WEAK)
+
+    assert score([signal_of(clock, Analysis.REGISTRIES, official=True)], degraded=False) is (
+        RiskLevel.CRITICAL
+    )
+    assert score([signal_of(clock, Analysis.MEMORY, recidivism=True)], degraded=False) is (
+        RiskLevel.CRITICAL
+    )
+    assert score([strong_registry, strong_domain], degraded=False) is RiskLevel.HIGH
+    assert score([strong_registry, strong_registry], degraded=False) is RiskLevel.MEDIUM
+    assert score([strong_registry], degraded=False) is RiskLevel.MEDIUM
+    assert score([weak, weak, weak], degraded=False) is RiskLevel.MEDIUM
+    assert score([weak, weak], degraded=False) is RiskLevel.LOW
+    assert score([], degraded=False) is RiskLevel.LOW
+
+
+def test_signals_without_evidence_do_not_score(clock: FakeClock) -> None:
+    """S02.29 una señal sin evidencia no puntúa y un parcial nunca es low."""
+    complete = evidence_of(clock)
+    incomplete = (
+        replace(complete, source=" "),
+        replace(complete, observed_at=None),
+        replace(complete, quote=""),
+    )
+    unsupported = [signal_of(clock, Analysis.PATTERNS, evidence=broken) for broken in incomplete]
+    assert usable(unsupported) == ()
+
+    weak = [signal_of(clock, Analysis.PATTERNS, Strength.WEAK) for _ in range(2)]
+    assert assess(weak, missing=(), analyzable=True).level is RiskLevel.LOW
+    degraded = assess(weak, missing=("document:d1",), analyzable=True)
+    assert degraded.level is RiskLevel.MEDIUM
+    assert degraded.outcome is VerdictOutcome.PARTIAL and degraded.missing == ("document:d1",)
+
+    empty = assess(unsupported, missing=("registries",), analyzable=True)
+    assert empty.level is RiskLevel.UNDETERMINED and empty.outcome is VerdictOutcome.PARTIAL
+    assert all(ACTIONS[level] for level in RiskLevel)
+    assert empty.actions
+
+
+def test_agents_only_declare_read_tools(services: Services, tenant: Tenant) -> None:
+    """S02.30 cada agente declara solo sus herramientas y ninguna crea ni reprocesa trabajos."""
+    assert set(AgentName) == {
+        AgentName.TRIAGE,
+        AgentName.REGISTRIES,
+        AgentName.DOMAIN,
+        AgentName.PATTERNS,
+        AgentName.MEMORY,
+        AgentName.DOCUMENT,
+        AgentName.VERDICT_WRITER,
+        AgentName.CONVERSATION,
+    }
+    forbidden = ("create", "reprocess", "submit", "close", "delete", "write", "query")
+    assert not [
+        capability
+        for capability in Capability
+        if any(word in str(capability) for word in forbidden)
+    ]
+    assert capabilities_of(AgentName.DOCUMENT) == {
+        Capability.GET_DOCUMENT_JOB,
+        Capability.GET_EXTRACTION_MANIFEST,
+        Capability.GET_EXTRACTION_CHUNKS,
+    }
+    assert Capability.GET_EXTRACTION_CHUNKS not in capabilities_of(AgentName.CONVERSATION)
+    assert INVESTIGATION_TEAM == (
+        AgentName.TRIAGE,
+        AgentName.REGISTRIES,
+        AgentName.DOMAIN,
+        AgentName.PATTERNS,
+        AgentName.MEMORY,
+    )
+    for agent in AgentName:
+        bound = tools_for(services, caller_of(agent, tenant, "case-1"))
+        assert {tool.capability for tool in bound} == capabilities_of(agent)
+
+
+async def test_tools_refuse_foreign_agent_tenant_and_case(
+    services: Services, tenant: Tenant
+) -> None:
+    """S02.31 una herramienta rechaza al agente sin capacidad, a otro tenant y a otro caso."""
+    case = await seed_case(services, tenant)
+    seeded = await seed_extraction(services, tenant, case, texts=("primer fragmento",))
+    stranger = Tenant(id=f"t-{uuid4().hex[:12]}", name="ajeno", active=True, revision=0)
+    await services.ledger.commit([Insert(stranger)])
+    sibling = await seed_case(services, tenant)
+
+    writer = await get_extraction_chunks(
+        services,
+        caller_of(AgentName.VERDICT_WRITER, tenant, case.id),
+        extraction_id=seeded.extraction_id,
+    )
+    foreign = await get_extraction_chunks(
+        services,
+        ToolCaller(agent=AgentName.DOCUMENT, tenant_id=stranger.id, case_id=case.id),
+        extraction_id=seeded.extraction_id,
+    )
+    sibling_case = await get_extraction_chunks(
+        services,
+        caller_of(AgentName.DOCUMENT, tenant, sibling.id),
+        extraction_id=seeded.extraction_id,
+    )
+    unknown = await get_extraction_manifest(
+        services, caller_of(AgentName.DOCUMENT, tenant, case.id), extraction_id="extraction:ghost"
+    )
+    assert writer == ToolDenied(NOT_AUTHORIZED)
+    assert foreign == ToolDenied(CASE_NOT_FOUND)
+    assert sibling_case == ToolDenied(EXTRACTION_NOT_FOUND)
+    assert unknown == ToolDenied(EXTRACTION_NOT_FOUND)
+    await services.ledger.delete_tenant_data(stranger.id)
+
+
+async def test_chunks_are_served_by_reference_within_budget(
+    services: Services, tenant: Tenant
+) -> None:
+    """S02.32 los fragmentos se entregan por referencia y acotados al presupuesto."""
+    texts = ("primer fragmento", "segundo fragmento", "tercer fragmento")
+    case = await seed_case(services, tenant)
+    seeded = await seed_extraction(services, tenant, case, texts=texts)
+    caller = caller_of(AgentName.DOCUMENT, tenant, case.id)
+
+    manifest = await get_extraction_manifest(services, caller, extraction_id=seeded.extraction_id)
+    assert isinstance(manifest, ManifestView)
+    assert manifest.chunk_ids == seeded.chunk_ids
+    assert [page.chunks for page in manifest.pages] == [3]
+    rendered = dumps(manifest_payload(manifest))
+    assert all(text not in rendered for text in texts)
+
+    first = await get_extraction_chunks(services, caller, extraction_id=seeded.extraction_id)
+    assert isinstance(first, ChunkPage)
+    assert len(first.chunks) == TEST_POLICY.analysis.chunk_budget
+    assert [chunk.text for chunk in first.chunks] == list(texts[:2])
+    assert first.cursor == 2
+    second = await get_extraction_chunks(
+        services, caller, extraction_id=seeded.extraction_id, cursor=first.cursor
+    )
+    assert isinstance(second, ChunkPage)
+    assert [chunk.chunk_id for chunk in second.chunks] == [seeded.chunk_ids[2]]
+    assert second.cursor is None
+
+
+async def test_entity_history_only_returns_aggregates(services: Services, tenant: Tenant) -> None:
+    """S02.33 find_entity_history devuelve al otro tenant solo agregados."""
+    domain = f"inversiones-{uuid4().hex[:10]}.test"
+    identifier = entity_id(EntityKind.DOMAIN, domain)
+    now = services.clock.now()
+    confirmed = await seed_case(services, tenant, review=ReviewState.CONFIRMED)
+    plain = await seed_case(services, tenant)
+    await services.ledger.commit(
+        [
+            Insert(
+                Entity(
+                    id=identifier,
+                    kind=EntityKind.DOMAIN,
+                    value=domain,
+                    strength=Strength.STRONG,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    revision=0,
+                )
+            ),
+            *(
+                Insert(
+                    CaseEntity(
+                        id=case_entity_id(case.id, identifier),
+                        tenant_id=tenant.id,
+                        case_id=case.id,
+                        entity_id=identifier,
+                        created_at=now,
+                        revision=0,
+                    )
+                )
+                for case in (confirmed, plain)
+            ),
+        ]
+    )
+
+    stranger = Tenant(id=f"t-{uuid4().hex[:12]}", name="ajeno", active=True, revision=0)
+    await services.ledger.commit([Insert(stranger)])
+    other_case = await seed_case(services, stranger)
+    history = await find_entity_history(
+        services,
+        ToolCaller(agent=AgentName.MEMORY, tenant_id=stranger.id, case_id=other_case.id),
+        kind=EntityKind.DOMAIN,
+        value=domain,
+    )
+    assert isinstance(history, EntityHistory)
+    assert (history.cases, history.confirmed) == (2, True)
+    assert history.first_seen_at is not None and history.last_seen_at is not None
+    rendered = dumps(history_payload(history))
+    assert confirmed.id not in rendered and plain.id not in rendered and tenant.id not in rendered
+
+    unseen = await find_entity_history(
+        services,
+        ToolCaller(agent=AgentName.MEMORY, tenant_id=stranger.id, case_id=other_case.id),
+        kind=EntityKind.DOMAIN,
+        value=f"desconocido-{uuid4().hex[:8]}.test",
+    )
+    assert isinstance(unseen, EntityHistory)
+    assert (unseen.cases, unseen.confirmed, unseen.first_seen_at) == (0, False, None)
+    await services.ledger.delete_tenant_data(stranger.id)
+
+
+@dataclass(frozen=True)
+class FailedDocument:
+    document_id: str
+    job_id: str
+
+
+async def complete_document_job(services: Services, job_id: str) -> None:
+    claimed = await claim_attempt(
+        services, JobMessage(job_id=job_id, attempt=1), consumer=DOCUMENT_EXTRACTOR.durable
+    )
+    assert isinstance(claimed, ClaimedAttempt)
+    job = claimed.job
+    extraction_id = services.ids.new_id()
+    digest = hashlib.sha256(extraction_id.encode()).hexdigest()
+    result = ExtractionResult(
+        extraction_id=extraction_id,
+        text_object=StoredObject(
+            key=extraction_text_key(job.tenant_id, job.case_id, extraction_id),
+            sha256=digest,
+            size=16,
+        ),
+        manifest_object=StoredObject(
+            key=extraction_manifest_key(job.tenant_id, job.case_id, extraction_id),
+            sha256=digest,
+            size=16,
+        ),
+        sha256=digest,
+        page_count=1,
+        ocr_pages=0,
+        chunks=(ExtractedChunk(page=1, position=0, text="fragmento", sha256=digest),),
+    )
+    done = await complete_extraction(services, job_id=job_id, attempt_number=1, result=result)
+    assert not isinstance(done, Skipped)
+
+
+async def failed_document_job(services: Services, tenant: Tenant, case: Case) -> FailedDocument:
+    now = services.clock.now()
+    marker = services.ids.new_id()
+    document = Document(
+        id=marker,
+        tenant_id=tenant.id,
+        case_id=case.id,
+        artifact_id=services.ids.new_id(),
+        sha256=hashlib.sha256(marker.encode()).hexdigest(),
+        mime="application/pdf",
+        size=512,
+        page_count=None,
+        state=DocumentState.ACCEPTED,
+        created_at=now,
+        expires_at=now + TEST_POLICY.retention.full_content,
+        revision=0,
+    )
+    job = new_job(
+        job_id=services.ids.new_id(),
+        tenant_id=tenant.id,
+        case_id=case.id,
+        job_type=JobType.DOCUMENT_EXTRACT,
+        document_id=document.id,
+        now=now,
+        policy=TEST_POLICY.jobs,
+        extractor_version=TEST_POLICY.extractor_version,
+        options=TEST_POLICY.extraction_options,
+        correlation_id=case.correlation_id,
+    )
+    await services.ledger.commit([Insert(document), Insert(job)])
+    claimed = await claim_attempt(
+        services, JobMessage(job_id=job.id, attempt=1), consumer=DOCUMENT_EXTRACTOR.durable
+    )
+    assert isinstance(claimed, ClaimedAttempt)
+    await fail_attempt(
+        services,
+        job_id=job.id,
+        attempt_number=1,
+        kind=FailureKind.PERMANENT,
+        code=PdfEncryptedError.code,
+    )
+    return FailedDocument(document_id=document.id, job_id=job.id)
+
+
+async def test_resumer_queues_analysis_when_no_document_is_pending(
+    services: Services, tenant: Tenant
+) -> None:
+    """S02.34 el resumer crea el trabajo de análisis solo cuando no quedan documentos pendientes."""
+    first = await accepted_submission(services, tenant)
+    second = await submit_document(
+        services, upload_of(tenant, case_id=first.case_id, data=OTHER_PDF)
+    )
+    assert isinstance(second, DocumentAccepted)
+
+    early = await resume_case(services, JobMessage(job_id=first.job_id, attempt=1))
+    assert isinstance(early, Skipped)
+    assert not [
+        job
+        for job in await services.ledger.jobs_of_case(first.case_id)
+        if job.type is JobType.CASE_ANALYZE
+    ]
+
+    for job_id in (first.job_id, second.job_id):
+        await complete_document_job(services, job_id)
+    queued = await resume_case(services, JobMessage(job_id=second.job_id, attempt=1))
+    assert isinstance(queued, AnalysisQueued)
+    analysis = await services.ledger.job(queued.job_id)
+    assert analysis is not None
+    assert (analysis.type, analysis.state) == (JobType.CASE_ANALYZE, JobState.QUEUED)
+    entries = await services.ledger.outbox_of_job(analysis.id)
+    assert [(entry.subject, entry.state) for entry in entries] == [
+        (JOB_SUBJECTS[JobType.CASE_ANALYZE], OutboxState.PENDING)
+    ]
+
+    repeated = await resume_case(services, JobMessage(job_id=second.job_id, attempt=1))
+    assert isinstance(repeated, Skipped)
+    assert [
+        job
+        for job in await services.ledger.jobs_of_case(first.case_id)
+        if job.type is JobType.CASE_ANALYZE
+    ] == [analysis]
+    case = await services.ledger.case(first.case_id)
+    assert case is not None and case.state is CaseState.AWAITING_PROCESSING
+
+
+async def test_analyzer_issues_a_verdict_once(services: Services, tenant: Tenant) -> None:
+    """S02.35 el case analyzer reclama el intento, pasa el caso a analyzing y emite el veredicto."""
+    case = await seed_case(services, tenant)
+    await seed_extraction(services, tenant, case, texts=("promesa de rentabilidad garantizada",))
+    job = await seed_analysis_job(services, tenant, case)
+    claimed = await claimed_analysis(services, job)
+
+    domain = f"inversiones-{uuid4().hex[:10]}.test"
+    investigator = ScriptedInvestigator(
+        Investigation(
+            signals=(
+                signal_of(services.clock, Analysis.REGISTRIES),
+                signal_of(services.clock, Analysis.DOMAIN),
+            ),
+            entities=(DraftEntity(kind=EntityKind.DOMAIN, value=domain, strength=Strength.STRONG),),
+            missing=(),
+        )
+    )
+    narrator = ScriptedNarrator("Hay indicios coincidentes en registros y dominio.")
+    analyzed = await analyze_case(
+        services, investigator, narrator, job=claimed.job, attempt=claimed.attempt
+    )
+    assert isinstance(analyzed, Analyzed)
+    assert analyzed.case.state is CaseState.VERDICT_ISSUED
+    assert investigator.briefs[0].language == "es"
+    assert narrator.briefs[0].level is RiskLevel.HIGH
+
+    verdict = await services.ledger.current_verdict(case.id)
+    assert verdict is not None
+    assert (verdict.version, verdict.level, verdict.outcome) == (
+        1,
+        RiskLevel.HIGH,
+        VerdictOutcome.ISSUED,
+    )
+    assert verdict.actions and verdict.missing == ()
+    signals = await services.ledger.signals_of_case(case.id)
+    assert {signal.analysis for signal in signals} == {Analysis.REGISTRIES, Analysis.DOMAIN}
+    assert all(signal.quote and signal.source and signal.observed_at for signal in signals)
+    entity = await services.ledger.entity_by_value(EntityKind.DOMAIN, domain)
+    assert entity is not None
+    assert [link.case_id for link in await services.ledger.cases_of_entity(entity.id)] == [case.id]
+
+    closed = await services.ledger.job(job.id)
+    assert closed is not None and closed.state is JobState.COMPLETED
+    events = [
+        entry
+        for entry in await services.ledger.outbox_of_job(job.id)
+        if entry.kind is OutboxKind.EVENT
+    ]
+    assert [(entry.subject, entry.state) for entry in events] == [
+        (CASE_COMPLETED_SUBJECT, OutboxState.PENDING)
+    ]
+
+    again = await analyze_case(
+        services, investigator, narrator, job=claimed.job, attempt=claimed.attempt
+    )
+    assert isinstance(again, Skipped)
+    current = await services.ledger.current_verdict(case.id)
+    assert current is not None and current.version == 1
+
+
+async def test_failed_extraction_degrades_and_empty_case_is_insufficient(
+    services: Services, tenant: Tenant
+) -> None:
+    """S02.36 una extracción fallida degrada el veredicto y sin entrada analizable el caso es insufficient."""
+    degraded_case = await seed_case(services, tenant)
+    await seed_extraction(services, tenant, degraded_case, texts=("fragmento legible",))
+    failed = await failed_document_job(services, tenant, degraded_case)
+    job = await seed_analysis_job(services, tenant, degraded_case)
+    claimed = await claimed_analysis(services, job)
+    investigator = ScriptedInvestigator(
+        Investigation(
+            signals=(signal_of(services.clock, Analysis.PATTERNS, Strength.WEAK),),
+            entities=(),
+            missing=(),
+        )
+    )
+    analyzed = await analyze_case(
+        services, investigator, ScriptedNarrator(), job=claimed.job, attempt=claimed.attempt
+    )
+    assert isinstance(analyzed, Analyzed)
+    assert analyzed.case.state is CaseState.PARTIAL
+    assert analyzed.verdict.outcome is VerdictOutcome.PARTIAL
+    assert analyzed.verdict.level is not RiskLevel.LOW
+    assert analyzed.verdict.missing == (f"document:{failed.document_id}",)
+
+    empty_case = await seed_case(services, tenant)
+    empty_job = await seed_analysis_job(services, tenant, empty_case)
+    empty_claimed = await claimed_analysis(services, empty_job)
+    nothing = await analyze_case(
+        services,
+        ScriptedInvestigator(Investigation(signals=(), entities=(), missing=())),
+        ScriptedNarrator(),
+        job=empty_claimed.job,
+        attempt=empty_claimed.attempt,
+    )
+    assert isinstance(nothing, Analyzed)
+    assert nothing.case.state is CaseState.INSUFFICIENT
+    assert nothing.verdict.outcome is VerdictOutcome.INSUFFICIENT
+    assert nothing.verdict.level is RiskLevel.UNDETERMINED
+    assert nothing.verdict.actions
+
+
+@pytest.fixture
+async def surreal_services(
+    anyio_backend: str, settings: Settings, ledger_schema: None, clock: FakeClock
+) -> AsyncIterator[Services]:
+    surreal = SurrealLedger(
+        url=f"{settings.surreal_ws_url}/rpc",
+        namespace=settings.ops_namespace,
+        database=settings.ops_database,
+        user=settings.surreal_ledger_user,
+        password=settings.surreal_ledger_password.get_secret_value(),
+    )
+    await surreal.connect()
+    try:
+        yield build_services(surreal, FakeBus(), clock, InMemoryObjectStore())
+    finally:
+        await surreal.close()
+
+
+async def agno_session_dump(settings: Settings) -> str:
+    http = SurrealHttp(settings.surreal_url)
+    info = await http.sql(
+        "INFO FOR DB;",
+        auth=settings.root_auth,
+        ns=settings.agno_namespace,
+        db=settings.agno_database,
+    )
+    database = info[-1].result
+    assert isinstance(database, dict)
+    dumped: list[str] = []
+    for table in sorted(names_in(database.get("tables"))):
+        rows = await http.sql(
+            f"SELECT * FROM {table};",
+            auth=settings.root_auth,
+            ns=settings.agno_namespace,
+            db=settings.agno_database,
+        )
+        dumped.append(json.dumps(rows[-1].result, default=str, ensure_ascii=False))
+    return "\n".join(dumped)
+
+
+async def test_real_cluster_analyses_without_leaking_text(
+    settings: Settings, surreal_services: Services, tracing: TracerProvider
+) -> None:
+    """S02.37 el clúster real analiza con el modelo mock sin dejar texto en la sesión ni en la traza."""
+    services = surreal_services
+    marker = uuid4().hex
+    fragment = f"fragmento sintetico {marker} del fixture"
+    tenant = Tenant(id=f"t-{uuid4().hex[:12]}", name="tenant real", active=True, revision=0)
+    await services.ledger.commit([Insert(tenant)])
+    try:
+        case = await seed_case(services, tenant)
+        await seed_extraction(services, tenant, case, texts=(fragment,))
+        job = await seed_analysis_job(services, tenant, case)
+        claimed = await claimed_analysis(services, job)
+
+        cluster = build_cluster(
+            services,
+            settings,
+            tenant_id=tenant.id,
+            case_id=case.id,
+            db=build_agno_db(settings),
+        )
+        tracer = tracing.get_tracer("argos-tests")
+        try:
+            with tracer.start_as_current_span("s02-analysis") as root:
+                analyzed = await analyze_case(
+                    services,
+                    cluster.investigator,
+                    cluster.narrator,
+                    job=claimed.job,
+                    attempt=claimed.attempt,
+                )
+            trace_id = format(root.get_span_context().trace_id, "032x")
+            tracing.force_flush()
+        finally:
+            await cluster.close()
+
+        assert isinstance(analyzed, Analyzed)
+        assert analyzed.case.state is CaseState.PARTIAL
+        assert analyzed.verdict.outcome is VerdictOutcome.PARTIAL
+        assert analyzed.verdict.level is RiskLevel.UNDETERMINED
+        assert analyzed.verdict.actions
+        assert set(analyzed.verdict.missing) == {str(Analysis(member)) for member in ANALYSES}
+        assert not await services.ledger.signals_of_case(case.id)
+
+        assert cluster.team.store_tool_messages is False
+        assert all(agent.store_tool_messages is False for agent in cluster.specialists)
+        assert marker not in investigation_prompt(await build_brief(services, case))
+
+        sessions = await agno_session_dump(settings)
+        assert f"case-{case.id}" in sessions
+        assert marker not in sessions
+
+        observations = await wait_for_observations(settings, trace_id=trace_id, timeout_seconds=60)
+        assert observations
+        assert all(
+            marker not in json.dumps(observation, default=str, ensure_ascii=False)
+            for observation in observations
+        )
+    finally:
+        await services.ledger.delete_tenant_data(tenant.id)
