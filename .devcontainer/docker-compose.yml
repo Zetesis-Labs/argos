@@ -51,6 +51,9 @@ services:
       SURREAL_RUNTIME_PASSWORD: ${SURREAL_RUNTIME_PASSWORD:-runtime-dev-password}
       SURREAL_LEDGER_PASSWORD: ${SURREAL_LEDGER_PASSWORD:-ledger-dev-password}
       NATS_URL: nats://nats:4222
+      ARTIFACT_ENDPOINT: http://rustfs:9000
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-argos-artifacts}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-argos-artifacts-dev-secret}
       LITELLM_BASE_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-argos-master-key}
       LANGFUSE_HOST: http://langfuse-web:3000
@@ -63,6 +66,8 @@ services:
       surrealdb:
         condition: service_healthy
       nats:
+        condition: service_healthy
+      rustfs:
         condition: service_healthy
       litellm:
         condition: service_healthy
@@ -112,6 +117,24 @@ services:
       - nats_data:/data
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-argos-artifacts}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-argos-artifacts-dev-secret}
+      RUSTFS_VOLUMES: /data
+    ports:
+      - "127.0.0.1:${RUSTFS_PORT:-9390}:9000"
+      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9391}:9001"
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -260,6 +283,7 @@ services:
 volumes:
   app_venv:
   nats_data:
+  rustfs_data:
   claude_memory:
   surreal_data:
   postgres_data:
