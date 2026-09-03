@@ -22,6 +22,17 @@ def environment_secret(name: str, default: str) -> SecretValue:
     return SecretValue(environment(name, default))
 
 
+WORKLOADS = ("gateway", "dispatcher", "resumer", "analyzer", "worker", "janitor")
+
+
+@dataclass(frozen=True)
+class WorkloadCredentials:
+    """Una identidad por workload (S02 §7): nadie comparte credencial."""
+
+    user: str
+    password: SecretValue
+
+
 @dataclass(frozen=True)
 class Settings:
     surreal_url: str = field(
@@ -44,12 +55,6 @@ class Settings:
         default_factory=lambda: environment_secret(
             "SURREAL_RUNTIME_PASSWORD", "runtime-dev-password"
         )
-    )
-    surreal_ledger_user: str = field(
-        default_factory=lambda: environment("SURREAL_LEDGER_USER", "ledger")
-    )
-    surreal_ledger_password: SecretValue = field(
-        default_factory=lambda: environment_secret("SURREAL_LEDGER_PASSWORD", "ledger-dev-password")
     )
     artifact_endpoint: str = field(
         default_factory=lambda: environment("ARTIFACT_ENDPOINT", "http://rustfs:9000")
@@ -101,6 +106,14 @@ class Settings:
     langfuse_secret_key: SecretValue = field(
         default_factory=lambda: environment_secret("LANGFUSE_SECRET_KEY", "")
     )
+
+    def workload(self, name: str) -> WorkloadCredentials:
+        if name not in WORKLOADS:
+            raise ValueError(f"workload desconocido: {name}")
+        return WorkloadCredentials(
+            user=environment(f"SURREAL_{name.upper()}_USER", name),
+            password=environment_secret(f"SURREAL_{name.upper()}_PASSWORD", f"{name}-dev-password"),
+        )
 
     @property
     def mcp_url(self) -> str:

@@ -10,18 +10,24 @@ from datetime import UTC, datetime, timedelta
 from argos.core.messages import ConsumerSpec, JobMessage, decode_job_message
 from argos.core.model import (
     Artifact,
+    ArtifactState,
     Attempt,
     Case,
     CaseEntity,
+    CaseState,
     Chunk,
+    Delete,
     Document,
+    DocumentState,
     Entity,
     EntityKind,
     EntityLink,
     Extraction,
     Insert,
     Job,
+    JobCount,
     JobState,
+    JobType,
     LedgerOp,
     LedgerRecord,
     OfficialWarning,
@@ -114,6 +120,8 @@ class InMemoryLedger:
             if key in planned_keys:
                 raise LedgerConflictError(f"{key} written twice in one transaction")
             planned_keys.add(key)
+            if isinstance(op, Delete):
+                continue
             if isinstance(op, Insert):
                 if key in self._rows:
                     raise LedgerConflictError(f"{key} already exists")
@@ -132,7 +140,10 @@ class InMemoryLedger:
     async def commit(self, ops: Sequence[LedgerOp]) -> None:
         self._check(ops)
         for op in ops:
-            self._rows[self._key(op.record)] = op.record
+            if isinstance(op, Delete):
+                self._rows.pop(self._key(op.record), None)
+            else:
+                self._rows[self._key(op.record)] = op.record
 
     def _all(self, table: str) -> list[LedgerRecord]:
         return [row for (name, _), row in self._rows.items() if name == table]
@@ -298,6 +309,49 @@ class InMemoryLedger:
         ]
         warnings.sort(key=lambda row: row.captured_at)
         return warnings
+
+    async def stale_artifacts(self, now: datetime, *, limit: int) -> list[Artifact]:
+        stale = [
+            row
+            for row in self._all("artifact")
+            if isinstance(row, Artifact)
+            and row.state is ArtifactState.UPLOADING
+            and row.expires_at <= now
+        ]
+        stale.sort(key=lambda row: row.expires_at)
+        return stale[:limit]
+
+    async def expired_documents(self, now: datetime, *, limit: int) -> list[Document]:
+        expired = [
+            row
+            for row in self._all("document")
+            if isinstance(row, Document)
+            and row.state is DocumentState.ACCEPTED
+            and row.expires_at <= now
+        ]
+        expired.sort(key=lambda row: row.expires_at)
+        return expired[:limit]
+
+    async def job_counts(self) -> list[JobCount]:
+        tally: dict[tuple[JobType, JobState], int] = {}
+        for row in self._all("job"):
+            if isinstance(row, Job):
+                tally[(row.type, row.state)] = tally.get((row.type, row.state), 0) + 1
+        return [
+            JobCount(type=job_type, state=state, count=count)
+            for (job_type, state), count in sorted(tally.items())
+        ]
+
+    async def oldest_queued_job(self) -> Job | None:
+        queued = [
+            row for row in self._all("job") if isinstance(row, Job) and row.state is JobState.QUEUED
+        ]
+        queued.sort(key=lambda row: row.created_at)
+        return queued[0] if queued else None
+
+    async def count_cases(self, states: Sequence[CaseState]) -> int:
+        wanted = set(states)
+        return sum(1 for row in self._all("case") if isinstance(row, Case) and row.state in wanted)
 
     async def signals_of_case(self, case_id: str) -> list[Signal]:
         signals = [
