@@ -12,7 +12,7 @@ from agno.agent import Agent
 from opentelemetry.sdk.trace import TracerProvider
 
 from argos.config import SecretValue, Settings
-from argos.devtools.bootstrap_db import apply_schema
+from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.platform.agent import run_agent
 from argos.platform.agno_db import build_agno_db
 from argos.platform.llm import MOCK_MODEL, build_model
@@ -102,7 +102,7 @@ async def test_schema_bootstrap_is_idempotent(settings: Settings) -> None:
     assert isinstance(rows, list) and rows
     row = rows[0]
     assert isinstance(row, dict)
-    assert row.get("version") == 1
+    assert row.get("version") == SCHEMA_VERSION
     assert row.get("applied_at")
 
     rotated_agent_password = f"agent-{uuid4().hex}"

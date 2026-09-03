@@ -45,6 +45,13 @@ class Settings:
             "SURREAL_RUNTIME_PASSWORD", "runtime-dev-password"
         )
     )
+    surreal_ledger_user: str = field(
+        default_factory=lambda: environment("SURREAL_LEDGER_USER", "ledger")
+    )
+    surreal_ledger_password: SecretValue = field(
+        default_factory=lambda: environment_secret("SURREAL_LEDGER_PASSWORD", "ledger-dev-password")
+    )
+    artifact_bucket: str = field(default_factory=lambda: environment("ARTIFACT_BUCKET", "argos"))
     ops_namespace: str = field(default_factory=lambda: environment("OPS_NAMESPACE", "argos"))
     ops_database: str = field(default_factory=lambda: environment("OPS_DATABASE", "ops"))
     agno_namespace: str = field(default_factory=lambda: environment("AGNO_NAMESPACE", "agno"))
