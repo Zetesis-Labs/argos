@@ -5,34 +5,41 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from argos.config import Settings
+from argos.config import WORKLOADS, Settings
 from argos.platform.surreal import SurrealHttp
 
-SCHEMA_VERSION = 3
-PLACEHOLDERS = ("{{AGENT_PASSWORD}}", "{{RUNTIME_PASSWORD}}", "{{LEDGER_PASSWORD}}")
+SCHEMA_VERSION = 4
 
 
-def render_schema(
-    template: str, *, agent_password: str, runtime_password: str, ledger_password: str
-) -> str:
-    passwords = (agent_password, runtime_password, ledger_password)
-    for password in passwords:
+def placeholder(name: str) -> str:
+    return f"{{{{{name.upper()}_PASSWORD}}}}"
+
+
+def render_schema(template: str, passwords: dict[str, str]) -> str:
+    rendered = template
+    for name, password in passwords.items():
         if "'" in password or "\\" in password:
             raise ValueError("Las contraseñas de SurrealDB no pueden contener comillas ni barras")
-    rendered = template
-    for placeholder, password in zip(PLACEHOLDERS, passwords, strict=True):
-        rendered = rendered.replace(placeholder, password)
+        rendered = rendered.replace(placeholder(name), password)
+    remaining = [name for name in passwords if placeholder(name) in rendered]
+    if remaining or "{{" in rendered:
+        raise ValueError(f"El esquema dejó marcadores sin sustituir: {remaining}")
     return rendered
+
+
+def schema_passwords(settings: Settings) -> dict[str, str]:
+    passwords = {
+        "agent": settings.surreal_agent_password.get_secret_value(),
+        "runtime": settings.surreal_runtime_password.get_secret_value(),
+    }
+    for workload in WORKLOADS:
+        passwords[workload] = settings.workload(workload).password.get_secret_value()
+    return passwords
 
 
 async def apply_schema(settings: Settings) -> None:
     template = settings.schema_path.read_text(encoding="utf-8")
-    rendered = render_schema(
-        template,
-        agent_password=settings.surreal_agent_password.get_secret_value(),
-        runtime_password=settings.surreal_runtime_password.get_secret_value(),
-        ledger_password=settings.surreal_ledger_password.get_secret_value(),
-    )
+    rendered = render_schema(template, schema_passwords(settings))
     await SurrealHttp(settings.surreal_url).sql(rendered, auth=settings.root_auth)
 
 

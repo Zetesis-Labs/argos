@@ -15,7 +15,7 @@ from argos.devtools.bootstrap_store import build_store
 from argos.platform.bus import JetStreamBus
 from argos.platform.clock import SystemClock
 from argos.platform.ids import TimeOrderedIds
-from argos.platform.ledger import SurrealLedger
+from argos.platform.ledger import ledger_for
 from argos.platform.ocr import TesseractOcr
 from argos.platform.pdf import PdfiumReader
 from argos.services.runtime import Sleep, Stop, stop_on_signals
@@ -97,13 +97,7 @@ async def run_worker(
 
 
 async def serve(settings: Settings, policy: Policy, *, interval: float) -> None:
-    ledger = SurrealLedger(
-        url=f"{settings.surreal_ws_url}/rpc",
-        namespace=settings.ops_namespace,
-        database=settings.ops_database,
-        user=settings.surreal_ledger_user,
-        password=settings.surreal_ledger_password.get_secret_value(),
-    )
+    ledger = ledger_for(settings, "worker")
     bus = JetStreamBus(settings.nats_url, policy=policy.jobs)
     store = build_store(settings)
     await ledger.connect()

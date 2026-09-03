@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 import zstandard
@@ -20,6 +20,12 @@ from argos.core.extraction import (
 )
 from argos.core.keys import extraction_manifest_key, extraction_text_key
 from argos.core.model import Attempt, FailureKind, Job
+from argos.core.observability import (
+    Attributes,
+    attempt_attributes,
+    extraction_attributes,
+    job_attributes,
+)
 from argos.core.ports import (
     ObjectStoreError,
     OpenPdf,
@@ -29,6 +35,7 @@ from argos.core.ports import (
     PdfTooManyPagesError,
     StoredObject,
 )
+from argos.platform.spans import annotate, span
 from argos.usecases.consumers import (
     ExtractedChunk,
     ExtractionResult,
@@ -73,6 +80,22 @@ def read_pages(document: OpenPdf, tools: PdfTools, *, services: Services) -> tup
 async def extract_document(
     services: Services, tools: PdfTools, *, job: Job, attempt: Attempt
 ) -> Job | Skipped:
+    with span("argos.extract", job_attributes(job) | attempt_attributes(attempt)) as current:
+
+        def record(attributes: Attributes) -> None:
+            annotate(current, attributes)
+
+        return await _extract(services, tools, job=job, attempt=attempt, record=record)
+
+
+async def _extract(
+    services: Services,
+    tools: PdfTools,
+    *,
+    job: Job,
+    attempt: Attempt,
+    record: Callable[[Attributes], None],
+) -> Job | Skipped:
     ledger = services.ledger
     if job.document_id is None:
         return Skipped("the job carries no document")
@@ -99,6 +122,14 @@ async def extract_document(
 
     text = full_text(pages)
     chunks = build_chunks(pages, max_chars=services.policy.extraction.chunk_max_chars)
+    record(
+        extraction_attributes(
+            pages=len(pages),
+            ocr_pages=ocr_pages(pages),
+            chunks=len(chunks),
+            bytes_read=len(payload),
+        )
+    )
     compressed = zstandard.ZstdCompressor().compress(text.encode())
     described = manifest(
         pages,

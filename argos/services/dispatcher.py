@@ -10,7 +10,7 @@ from argos.config import Settings
 from argos.core.policy import Policy
 from argos.platform.bus import JetStreamBus
 from argos.platform.clock import SystemClock
-from argos.platform.ledger import SurrealLedger
+from argos.platform.ledger import ledger_for
 from argos.services.runtime import Sleep, Stop, stop_on_signals
 from argos.usecases.deps import Dispatching
 from argos.usecases.dispatch import (
@@ -47,13 +47,7 @@ async def run_dispatcher(
 
 
 async def serve(settings: Settings, policy: Policy, *, interval: float) -> None:
-    ledger = SurrealLedger(
-        url=f"{settings.surreal_ws_url}/rpc",
-        namespace=settings.ops_namespace,
-        database=settings.ops_database,
-        user=settings.surreal_ledger_user,
-        password=settings.surreal_ledger_password.get_secret_value(),
-    )
+    ledger = ledger_for(settings, "dispatcher")
     bus = JetStreamBus(settings.nats_url, policy=policy.jobs)
     await ledger.connect()
     await bus.connect()

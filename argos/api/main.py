@@ -22,7 +22,7 @@ from argos.platform.agno_db import build_agno_db
 from argos.platform.bus import JetStreamBus
 from argos.platform.clock import SystemClock
 from argos.platform.ids import TimeOrderedIds
-from argos.platform.ledger import SurrealLedger
+from argos.platform.ledger import SurrealLedger, ledger_for
 from argos.platform.llm import build_model, close_model
 from argos.platform.objects import RustFsObjectStore
 from argos.usecases.deps import Services
@@ -42,13 +42,7 @@ class Wiring:
 
 
 def build_gateway(settings: Settings, policy: Policy) -> Wiring:
-    ledger = SurrealLedger(
-        url=f"{settings.surreal_ws_url}/rpc",
-        namespace=settings.ops_namespace,
-        database=settings.ops_database,
-        user=settings.surreal_ledger_user,
-        password=settings.surreal_ledger_password.get_secret_value(),
-    )
+    ledger = ledger_for(settings, "gateway")
     bus = JetStreamBus(settings.nats_url, policy=policy.jobs)
     store = build_store(settings)
     services = Services(

@@ -18,6 +18,7 @@ from argos.core.model import (
     Verdict,
     entity_id,
 )
+from argos.core.observability import attempt_attributes, job_attributes, verdict_attributes
 from argos.core.ports import (
     CaseBrief,
     ExtractionRef,
@@ -27,6 +28,7 @@ from argos.core.ports import (
     VerdictBrief,
 )
 from argos.core.verdicts import VerdictDraft, plan_analysis_completion, plan_analysis_start
+from argos.platform.spans import annotate, span
 from argos.usecases.consumers import Skipped
 from argos.usecases.deps import Bookkeeping
 
@@ -71,6 +73,21 @@ async def build_brief(services: Bookkeeping, case: Case) -> CaseBrief:
 
 
 async def analyze_case(
+    services: Bookkeeping,
+    investigator: Investigator,
+    narrator: Narrator,
+    *,
+    job: Job,
+    attempt: Attempt,
+) -> Analyzed | Skipped:
+    with span("argos.analyze", job_attributes(job) | attempt_attributes(attempt)) as current:
+        analyzed = await _analyze(services, investigator, narrator, job=job, attempt=attempt)
+        if isinstance(analyzed, Analyzed):
+            annotate(current, verdict_attributes(analyzed.verdict))
+        return analyzed
+
+
+async def _analyze(
     services: Bookkeeping,
     investigator: Investigator,
     narrator: Narrator,
