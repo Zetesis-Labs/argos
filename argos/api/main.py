@@ -111,4 +111,6 @@ def main() -> None:
             yield
 
     app = serve_app(wiring.gateway, settings, lifespan=lifespan)
-    uvicorn.run(app, host="127.0.0.1", port=settings.gateway_port)
+    # Dentro del contenedor hay que escuchar en todas sus interfaces o el reenvío
+    # de Docker no llega; el compose ya publica el puerto solo en el loopback del host.
+    uvicorn.run(app, host="0.0.0.0", port=settings.gateway_port)  # noqa: S104
