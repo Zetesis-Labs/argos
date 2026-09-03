@@ -57,7 +57,7 @@ artefactos a RustFS.
 | `argos/tools/` | Adaptadores externos y fakes |
 | `argos/agents/` | Agentes, Team y Workflow; sin reglas de negocio |
 | `argos/platform/` | SurrealDB (HTTP y libro de trabajos), MCP, Agno DB, LiteLLM, trazas, reloj e ids |
-| `argos/services/` | Procesos de larga vida: bucle del `dispatcher` |
+| `argos/services/` | Procesos de larga vida: `dispatcher` y `worker` |
 | `argos/devtools/` | `bootstrap-db`, `bootstrap-bus`, `bootstrap-store` y `spec-check` |
 | `tests/` | Tests unitarios y un fichero por spec técnica activa |
 | `.devcontainer/` | Compose de desarrollo |
