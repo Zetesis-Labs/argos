@@ -1,15 +1,15 @@
 # S02 · AgentOS, clúster de agentes y workers
 
-**Estado**: arquitectura aprobada; implementación y casos de aceptación
-pendientes.
+**Estado**: en implementación. Los casos anclados están en el §16; los
+criterios del §15 que aún no tienen caso son trabajo pendiente.
 
 Esta vertical convierte la base S01 en un AgentOS capaz de coordinar agentes
 especialistas y trabajos asíncronos. Cubre W1, W2 y W5; R1, R8, R9, R12,
 R15–R29; y la constitución §3–§4, §6–§12.
 
-La numeración `S02.n` se asignará junto con los tests que fallen al iniciar la
-implementación. Hasta entonces, este documento fija decisiones y criterios de
-aceptación, pero `spec-check` no lo presenta como código terminado.
+La numeración `S02.n` se asigna junto con los tests, en el orden de
+implantación del §14. Un criterio del §15 sin caso numerado no se considera
+implementado.
 
 ## 1. Objetivo y límites
 
@@ -461,3 +461,123 @@ La implantación se divide sin cambiar estas fronteras:
 - Un veredicto `partial` sin señales lleva nivel `undetermined` y acciones.
 - El agente de documentos no dispone de herramienta para crear ni reprocesar
   trabajos.
+
+## 16. Casos anclados
+
+Los casos siguen el orden de implantación del §14. Cada uno cita los flujos y
+reglas de la funcional que cubre; `spec-check` exige un test por caso.
+
+## S02.1 El esquema del libro de trabajos se aplica de forma idempotente
+
+- Dado una SurrealDB con la base S01 aplicada
+- Cuando `bootstrap-db` se ejecuta dos veces seguidas
+- Entonces `argos/ops` contiene las tablas `tenant`, `case`, `artifact`,
+  `document`, `job`, `attempt`, `outbox_entry`, `extraction` y `chunk`, todas
+  `SCHEMAFULL`, el usuario `ledger` que usan gateway, dispatcher y worker en
+  desarrollo, y `schema_version:current` tiene la versión que declara
+  `bootstrap-db` (constitución §7, §14; R21, R22)
+
+## S02.2 Enviar un PDF válido responde antes de extraer y deja documento, trabajo y outbox consistentes
+
+- Dado un tenant activo y un PDF sintético válido
+- Cuando el cliente lo envía sin indicar caso
+- Entonces la respuesta llega sin esperar al worker y contiene `case_id`,
+  `document_id` y `job_id`; el caso está en `awaiting_processing`; el documento
+  está `accepted` con el SHA-256 y el tamaño del fichero; su artefacto está
+  `available` bajo la clave `tenants/{t}/cases/{c}/documents/{d}/source.pdf` y
+  el objeto existe en el almacén; el trabajo `document.extract` está `queued`
+  en el intento 1 con el máximo de intentos de la política; existe una sola
+  entrada de outbox, comando `argos.jobs.document.extract.v1` con
+  `message_id = {job_id}:1`, y nada se ha publicado todavía en el bus (W5.1–3,
+  R20, R23; constitución §7)
+
+## S02.3 El mismo PDF en el mismo caso devuelve lo existente; en otro caso es otro documento
+
+- Dado un caso con un documento aceptado
+- Cuando se envía el mismo PDF a ese caso y después sin caso
+- Entonces el primer envío devuelve el documento y el trabajo existentes marcados
+  como reutilizados y el caso sigue con un solo trabajo; el segundo crea otro
+  caso, otro documento y otro trabajo (R22)
+
+## S02.4 Un PDF que no supera la validación barata se rechaza antes de encolar
+
+- Dado un fichero que no empieza por `%PDF-`, uno con extensión distinta de
+  `.pdf`, uno con tipo declarado distinto de `application/pdf` o uno cuyo
+  tamaño declarado supera el límite
+- Cuando se envía
+- Entonces se rechaza con `document.not_pdf`, `document.bad_extension`,
+  `document.bad_mime` o `document.too_large` respectivamente y no queda ningún
+  objeto en el almacén ni ningún trabajo (R19, R28)
+
+## S02.5 Un fallo entre la transacción y la publicación no pierde el trabajo
+
+- Dado un comando pendiente en el outbox y un bus que rechaza la primera
+  publicación
+- Cuando el dispatcher ejecuta dos pasadas
+- Entonces tras la primera el comando sigue `pending` sin arrendamiento y el bus
+  no tiene nada; tras la segunda está `published` y el bus contiene un solo
+  mensaje con el subject del trabajo, cabecera `Nats-Msg-Id = {job_id}:1` y un
+  payload que contiene exactamente `job_id` y `attempt`; una tercera pasada no
+  publica nada (R25; constitución §9; S02 §8)
+
+## S02.6 Dos entregas del mismo intento producen una sola reclamación efectiva
+
+- Dado un trabajo `queued` en el intento 1
+- Cuando dos consumidores reclaman el intento 1 y un tercero reclama el 2
+- Entonces solo el primero obtiene el intento; el trabajo está `running` con
+  `lease_until = ahora + arrendamiento`; existe un único intento, del primer
+  consumidor; los otros dos deben confirmar sin efecto (R22, R25; S02 §8)
+
+## S02.7 Un intento cuyo arrendamiento vence se reencola con intento nuevo o termina failed
+
+- Dado un trabajo reclamado con máximo de dos intentos
+- Cuando vence el arrendamiento y el dispatcher recupera arrendamientos, y se
+  repite con el segundo intento
+- Entonces la primera vez el intento 1 queda `lost`, el trabajo vuelve a
+  `queued` en el intento 2 sin arrendamiento y existe el comando del intento 2
+  con `not_before = ahora + backoff`, que el dispatcher no ve hasta esa hora;
+  la segunda vez el trabajo termina `failed` con error público
+  `job.attempts_exhausted`, hay un evento `argos.events.document.failed.v1`
+  pendiente y no existe comando para un intento 3 (R21, R28; S02 §8)
+
+## S02.8 Un fallo transitorio reintenta con backoff y uno permanente no
+
+- Dado un trabajo reclamado
+- Cuando el consumidor lo cierra con un fallo transitorio, reclama el intento 2
+  y lo cierra con `pdf.encrypted`, y después repite ese cierre
+- Entonces el fallo transitorio deja el trabajo `queued` en el intento 2 con su
+  comando retrasado por backoff; el permanente deja el trabajo `failed` con
+  error público `pdf.encrypted`, el documento `rejected`, ambos intentos
+  `failed` con su tipo de error, un solo evento de fallo y ningún intento 3; el
+  cierre repetido se reconoce como obsoleto sin efecto (R19, R21, R28; S02 §11)
+
+## S02.9 El cierre de una extracción y su evento nacen en una transacción
+
+- Dado un trabajo reclamado
+- Cuando el worker confirma la extracción con sus artefactos y chunks, y
+  después vuelve a confirmarla
+- Entonces el trabajo está `completed` sin arrendamiento, el intento
+  `succeeded`, el documento conoce sus páginas, existe una extracción
+  `available` con sus chunks ordenados y un evento
+  `argos.events.document.extracted.v1` pendiente; la segunda confirmación se
+  reconoce como obsoleta y no añade extracción ni evento (W5.5, R22, R25; S02
+  §8.7)
+
+## S02.10 Un documento de otro tenant nunca se puede consultar
+
+- Dado un documento aceptado por un tenant
+- Cuando otro tenant consulta su trabajo, su caso o su documento
+- Entonces los tres responden como inexistentes; el propio tenant ve el estado
+  público del trabajo y nunca el error interno (R16, R28)
+
+## S02.11 analyze_notice deja caso y trabajo case.analyze en una transacción
+
+- Dado un tenant activo y un aviso breve válido
+- Cuando se abre el caso, se repite el mismo aviso con distinto espaciado y
+  mayúsculas, lo envía otro tenant y se envían un aviso demasiado largo y uno
+  vacío
+- Entonces la primera apertura deja el caso `received` con su hash, un trabajo
+  `case.analyze` `queued` y su comando `argos.jobs.case.analyze.v1` pendiente;
+  la repetición devuelve el mismo caso y trabajo sin crear nada; el otro tenant
+  obtiene un caso distinto; los dos últimos se rechazan con
+  `notice.text_too_long` y `notice.empty` (W1.2–3, R1, R9, R12)

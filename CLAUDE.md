@@ -9,8 +9,8 @@ stateless para trabajos pesados.
 
 1. Lee `specs/constitution.md`; gana a cualquier otra instrucción del repo.
 2. Lee `specs/argos/veredicto/functional-specs.md` y la spec `Sxx` del vertical.
-3. Distingue estado actual de arquitectura objetivo: S01 está implementada; S02
-   está especificada pero no implementada.
+3. Distingue estado actual de arquitectura objetivo: S01 está implementada; de
+   S02 solo está implementado lo que tiene caso `S02.n` en su §16.
 4. Un comportamiento nuevo empieza por spec, sigue por un test cuyo docstring
    comienza con `Sxx.n` y termina en código. `uv run spec-check` vigila el
    anclaje.
@@ -49,10 +49,11 @@ RustFS para artefactos.
 | `specs/S01-plataforma.md` | Base implementada y casos anclados |
 | `specs/S02-agentos-workers.md` | Arquitectura aprobada del clúster, NATS, RustFS y PDFs |
 | `db/schema.surql` | Esquema SurrealDB idempotente; lo aplica `bootstrap-db` |
-| `argos/core/` | Funciones puras: señales, puntuación y veredicto; sin I/O |
+| `argos/core/` | Funciones puras: modelo, puertos, planes del libro de trabajos, señales, puntuación y veredicto; sin I/O |
+| `argos/usecases/` | Casos de uso: orquestan puertos con las decisiones del núcleo |
 | `argos/tools/` | Adaptadores externos y fakes |
 | `argos/agents/` | Agentes, Team y Workflow; sin reglas de negocio |
-| `argos/platform/` | SurrealDB, MCP, Agno DB, LiteLLM y trazas |
+| `argos/platform/` | SurrealDB (HTTP y libro de trabajos), MCP, Agno DB, LiteLLM, trazas, reloj e ids |
 | `argos/devtools/` | `bootstrap-db` y `spec-check` |
 | `tests/` | Tests unitarios y un fichero por spec técnica activa |
 | `.devcontainer/` | Compose de desarrollo |
