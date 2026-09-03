@@ -82,6 +82,7 @@ class Settings:
     litellm_master_key: SecretValue = field(
         default_factory=lambda: environment_secret("LITELLM_MASTER_KEY", "sk-argos-master-key")
     )
+    analysis_model: str = field(default_factory=lambda: environment("ANALYSIS_MODEL", "mock"))
 
     langfuse_host: str = field(
         default_factory=lambda: environment("LANGFUSE_HOST", "http://langfuse-web:3000")
