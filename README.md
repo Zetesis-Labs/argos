@@ -86,7 +86,7 @@ por el hash del contenido. Un fallo terminal queda operable en SurrealDB para
 inspección y reproceso. Todo análisis de caso, también el de un aviso breve,
 es un trabajo durable que sobrevive al proceso que atendió la llamada.
 
-## Arrancar la base S01
+## Arrancar el entorno
 
 Con Dev Containers: «Reopen in Container». Sin la extensión:
 
@@ -95,6 +95,7 @@ cp .env.example .env
 docker compose -f .devcontainer/docker-compose.yml up -d --build
 docker exec argos-app-1 uv sync
 docker exec argos-app-1 uv run bootstrap-db
+docker exec argos-app-1 uv run bootstrap-bus
 docker exec argos-app-1 uv run pytest
 docker exec argos-app-1 uv run spec-check
 docker exec argos-app-1 uv run ruff check .
@@ -111,10 +112,11 @@ No se ejecutan tests, lint, tipos ni builds desde el host.
 | Langfuse | `http://localhost:3200` |
 | SurrealDB | `http://localhost:8100` (MCP en `/mcp`) |
 | Surrealist | `http://localhost:8200` |
+| NATS JetStream | `nats://localhost:4300` (monitor en `http://localhost:8300`) |
 
-El compose actual incluye Redis y un almacén MinIO exclusivamente como
-dependencias internas de Langfuse. El código de Argos no los usa como cola ni
-como almacén de artefactos. S02 añadirá NATS y RustFS para la aplicación.
+El compose incluye Redis y un almacén MinIO exclusivamente como dependencias
+internas de Langfuse. El código de Argos no los usa como cola ni como almacén
+de artefactos: la cola es NATS JetStream y el almacén será RustFS.
 
 ## Documentación
 
