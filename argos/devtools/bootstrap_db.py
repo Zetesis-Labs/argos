@@ -8,7 +8,7 @@ import sys
 from argos.config import Settings
 from argos.platform.surreal import SurrealHttp
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PLACEHOLDERS = ("{{AGENT_PASSWORD}}", "{{RUNTIME_PASSWORD}}", "{{LEDGER_PASSWORD}}")
 
 

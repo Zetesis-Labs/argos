@@ -38,6 +38,9 @@ DEFINE FIELD IF NOT EXISTS notice_hash ON case TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS language ON case TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS correlation_id ON case TYPE string;
 DEFINE FIELD IF NOT EXISTS previous_case_id ON case TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS review_state ON case TYPE string DEFAULT 'unreviewed';
+DEFINE FIELD IF NOT EXISTS reviewed_at ON case TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS reviewed_by ON case TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON case TYPE datetime;
 DEFINE FIELD IF NOT EXISTS updated_at ON case TYPE datetime;
 DEFINE FIELD IF NOT EXISTS revision ON case TYPE int;
@@ -150,4 +153,76 @@ DEFINE FIELD IF NOT EXISTS expires_at ON chunk TYPE datetime;
 DEFINE FIELD IF NOT EXISTS revision ON chunk TYPE int;
 DEFINE INDEX IF NOT EXISTS chunk_extraction ON chunk FIELDS extraction_id, position UNIQUE;
 
-UPSERT schema_version:current SET version = 2;
+-- Memoria compartida entre tenants (constitución §6, R29): la entidad, sus
+-- vínculos y las advertencias oficiales no llevan tenant. El vínculo del caso
+-- con la entidad sí, y es el único camino de un tenant a sus casos.
+
+DEFINE TABLE IF NOT EXISTS entity SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS kind ON entity TYPE string;
+DEFINE FIELD IF NOT EXISTS value ON entity TYPE string;
+DEFINE FIELD IF NOT EXISTS strength ON entity TYPE string;
+DEFINE FIELD IF NOT EXISTS first_seen_at ON entity TYPE datetime;
+DEFINE FIELD IF NOT EXISTS last_seen_at ON entity TYPE datetime;
+DEFINE FIELD IF NOT EXISTS revision ON entity TYPE int;
+DEFINE INDEX IF NOT EXISTS entity_value ON entity FIELDS kind, value UNIQUE;
+
+DEFINE TABLE IF NOT EXISTS entity_link SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS left_entity_id ON entity_link TYPE string;
+DEFINE FIELD IF NOT EXISTS right_entity_id ON entity_link TYPE string;
+DEFINE FIELD IF NOT EXISTS reason ON entity_link TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON entity_link TYPE datetime;
+DEFINE FIELD IF NOT EXISTS revision ON entity_link TYPE int;
+DEFINE INDEX IF NOT EXISTS entity_link_pair ON entity_link FIELDS left_entity_id, right_entity_id UNIQUE;
+
+DEFINE TABLE IF NOT EXISTS case_entity SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS tenant_id ON case_entity TYPE string;
+DEFINE FIELD IF NOT EXISTS case_id ON case_entity TYPE string;
+DEFINE FIELD IF NOT EXISTS entity_id ON case_entity TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON case_entity TYPE datetime;
+DEFINE FIELD IF NOT EXISTS revision ON case_entity TYPE int;
+DEFINE INDEX IF NOT EXISTS case_entity_pair ON case_entity FIELDS case_id, entity_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS case_entity_entity ON case_entity FIELDS entity_id;
+
+DEFINE TABLE IF NOT EXISTS warning SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS regulator ON warning TYPE string;
+DEFINE FIELD IF NOT EXISTS url ON warning TYPE string;
+DEFINE FIELD IF NOT EXISTS entity_kind ON warning TYPE string;
+DEFINE FIELD IF NOT EXISTS entity_value ON warning TYPE string;
+DEFINE FIELD IF NOT EXISTS active ON warning TYPE bool;
+DEFINE FIELD IF NOT EXISTS captured_at ON warning TYPE datetime;
+DEFINE FIELD IF NOT EXISTS revision ON warning TYPE int;
+DEFINE INDEX IF NOT EXISTS warning_entity ON warning FIELDS entity_kind, entity_value;
+
+DEFINE TABLE IF NOT EXISTS signal SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS tenant_id ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS case_id ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS analysis ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS code ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS strength ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS official ON signal TYPE bool;
+DEFINE FIELD IF NOT EXISTS recidivism ON signal TYPE bool;
+DEFINE FIELD IF NOT EXISTS source ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS observed_at ON signal TYPE datetime;
+DEFINE FIELD IF NOT EXISTS value ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS quote ON signal TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON signal TYPE datetime;
+DEFINE FIELD IF NOT EXISTS revision ON signal TYPE int;
+DEFINE INDEX IF NOT EXISTS signal_case ON signal FIELDS case_id;
+
+DEFINE TABLE IF NOT EXISTS verdict SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS tenant_id ON verdict TYPE string;
+DEFINE FIELD IF NOT EXISTS case_id ON verdict TYPE string;
+DEFINE FIELD IF NOT EXISTS version ON verdict TYPE int;
+DEFINE FIELD IF NOT EXISTS level ON verdict TYPE string;
+DEFINE FIELD IF NOT EXISTS outcome ON verdict TYPE string;
+DEFINE FIELD IF NOT EXISTS state ON verdict TYPE string;
+DEFINE FIELD IF NOT EXISTS language ON verdict TYPE string;
+DEFINE FIELD IF NOT EXISTS summary ON verdict TYPE string;
+DEFINE FIELD IF NOT EXISTS actions ON verdict TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS missing ON verdict TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS created_at ON verdict TYPE datetime;
+DEFINE FIELD IF NOT EXISTS revision ON verdict TYPE int;
+DEFINE INDEX IF NOT EXISTS verdict_case_version ON verdict FIELDS case_id, version UNIQUE;
+DEFINE INDEX IF NOT EXISTS verdict_case_state ON verdict FIELDS case_id, state;
+
+UPSERT schema_version:current SET version = 3;
