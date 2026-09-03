@@ -12,22 +12,32 @@ from argos.core.model import (
     Artifact,
     Attempt,
     Case,
+    CaseEntity,
     Chunk,
     Document,
+    Entity,
+    EntityKind,
+    EntityLink,
     Extraction,
     Insert,
     Job,
     JobState,
     LedgerOp,
     LedgerRecord,
+    OfficialWarning,
     OutboxEntry,
     OutboxState,
+    Signal,
     Tenant,
+    Verdict,
+    VerdictState,
     table_name,
 )
 from argos.core.ports import (
     BusUnavailableError,
+    CaseBrief,
     Delivery,
+    Investigation,
     LedgerConflictError,
     ObjectMetadata,
     ObjectSizeMismatchError,
@@ -37,6 +47,7 @@ from argos.core.ports import (
     PageOcr,
     PdfError,
     StoredObject,
+    VerdictBrief,
 )
 
 
@@ -61,8 +72,19 @@ class SequentialIds:
         return f"{self._prefix}{self._next:04d}"
 
 
+SHARED_RECORDS = (Entity, EntityLink, OfficialWarning)
+
+
 def _unique_key(record: LedgerRecord) -> tuple[object, ...] | None:
     match record:
+        case Entity():
+            return ("entity", record.kind, record.value)
+        case EntityLink():
+            return ("entity_link", record.left_entity_id, record.right_entity_id)
+        case CaseEntity():
+            return ("case_entity", record.case_id, record.entity_id)
+        case Verdict():
+            return ("verdict", record.case_id, record.version)
         case Document():
             return ("document", record.case_id, record.sha256)
         case Attempt():
@@ -151,6 +173,15 @@ class InMemoryLedger:
                 return row
         return None
 
+    async def documents_of_case(self, case_id: str) -> list[Document]:
+        documents = [
+            row
+            for row in self._all("document")
+            if isinstance(row, Document) and row.case_id == case_id
+        ]
+        documents.sort(key=lambda row: row.created_at)
+        return documents
+
     async def job(self, job_id: str) -> Job | None:
         row = self._rows.get(("job", job_id))
         return row if isinstance(row, Job) else None
@@ -224,15 +255,80 @@ class InMemoryLedger:
         chunks.sort(key=lambda row: row.position)
         return chunks
 
-    async def delete_tenant_data(self, tenant_id: str) -> None:
-        doomed = [
-            key
-            for key, row in self._rows.items()
-            if (isinstance(row, Tenant) and row.id == tenant_id)
-            or (not isinstance(row, Tenant) and row.tenant_id == tenant_id)
+    async def extractions_of_case(self, case_id: str) -> list[Extraction]:
+        extractions = [
+            row
+            for row in self._all("extraction")
+            if isinstance(row, Extraction) and row.case_id == case_id
         ]
+        extractions.sort(key=lambda row: row.created_at)
+        return extractions
+
+    async def entity_by_value(self, kind: EntityKind, value: str) -> Entity | None:
+        for row in self._all("entity"):
+            if isinstance(row, Entity) and row.kind is kind and row.value == value:
+                return row
+        return None
+
+    async def entities_of_case(self, case_id: str) -> list[CaseEntity]:
+        links = [
+            row
+            for row in self._all("case_entity")
+            if isinstance(row, CaseEntity) and row.case_id == case_id
+        ]
+        links.sort(key=lambda row: row.created_at)
+        return links
+
+    async def cases_of_entity(self, entity_id: str) -> list[CaseEntity]:
+        links = [
+            row
+            for row in self._all("case_entity")
+            if isinstance(row, CaseEntity) and row.entity_id == entity_id
+        ]
+        links.sort(key=lambda row: row.created_at)
+        return links
+
+    async def warnings_for(self, kind: EntityKind, value: str) -> list[OfficialWarning]:
+        warnings = [
+            row
+            for row in self._all("warning")
+            if isinstance(row, OfficialWarning)
+            and row.entity_kind is kind
+            and row.entity_value == value
+        ]
+        warnings.sort(key=lambda row: row.captured_at)
+        return warnings
+
+    async def signals_of_case(self, case_id: str) -> list[Signal]:
+        signals = [
+            row for row in self._all("signal") if isinstance(row, Signal) and row.case_id == case_id
+        ]
+        signals.sort(key=lambda row: (row.created_at, row.id))
+        return signals
+
+    async def current_verdict(self, case_id: str) -> Verdict | None:
+        verdicts = [
+            row
+            for row in self._all("verdict")
+            if isinstance(row, Verdict)
+            and row.case_id == case_id
+            and row.state is VerdictState.CURRENT
+        ]
+        verdicts.sort(key=lambda row: row.version, reverse=True)
+        return verdicts[0] if verdicts else None
+
+    async def delete_tenant_data(self, tenant_id: str) -> None:
+        doomed = [key for key, row in self._rows.items() if _belongs_to(row, tenant_id)]
         for key in doomed:
             del self._rows[key]
+
+
+def _belongs_to(record: LedgerRecord, tenant_id: str) -> bool:
+    if isinstance(record, Tenant):
+        return record.id == tenant_id
+    if isinstance(record, SHARED_RECORDS):
+        return False
+    return record.tenant_id == tenant_id
 
 
 class InMemoryObjectStore:
@@ -409,3 +505,25 @@ class FakeBus:
         self._queue.clear()
         self._seen.clear()
         self.published.clear()
+
+
+class ScriptedInvestigator:
+    """Devuelve una investigación fija y guarda lo que se le pidió."""
+
+    def __init__(self, result: Investigation) -> None:
+        self._result = result
+        self.briefs: list[CaseBrief] = []
+
+    async def investigate(self, brief: CaseBrief) -> Investigation:
+        self.briefs.append(brief)
+        return self._result
+
+
+class ScriptedNarrator:
+    def __init__(self, summary: str = "Resumen de prueba con indicios.") -> None:
+        self._summary = summary
+        self.briefs: list[VerdictBrief] = []
+
+    async def narrate(self, brief: VerdictBrief) -> str:
+        self.briefs.append(brief)
+        return self._summary

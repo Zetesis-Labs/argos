@@ -13,15 +13,22 @@ from argos.core.model import (
     Artifact,
     Attempt,
     Case,
+    CaseEntity,
     Chunk,
     Document,
+    Entity,
+    EntityKind,
     Extraction,
     Insert,
     Job,
     LedgerOp,
     LedgerRecord,
+    OfficialWarning,
     OutboxEntry,
+    Signal,
     Tenant,
+    Verdict,
+    VerdictState,
     table_name,
 )
 from argos.core.ports import LedgerConflictError, LedgerError
@@ -41,6 +48,9 @@ DELETE_TENANT_STATEMENTS = (
     "DELETE FROM outbox_entry WHERE tenant_id = $tenant;",
     "DELETE FROM extraction WHERE tenant_id = $tenant;",
     "DELETE FROM chunk WHERE tenant_id = $tenant;",
+    "DELETE FROM case_entity WHERE tenant_id = $tenant;",
+    "DELETE FROM signal WHERE tenant_id = $tenant;",
+    "DELETE FROM verdict WHERE tenant_id = $tenant;",
     "DELETE type::record('tenant', $tenant);",
 )
 
@@ -184,6 +194,13 @@ class SurrealLedger:
         )
         return documents[0] if documents else None
 
+    async def documents_of_case(self, case_id: str) -> list[Document]:
+        return await self._many(
+            Document,
+            "SELECT * FROM document WHERE case_id = $case ORDER BY created_at;",
+            {"case": case_id},
+        )
+
     async def job(self, job_id: str) -> Job | None:
         return await self._one(Job, "job", job_id)
 
@@ -239,6 +256,59 @@ class SurrealLedger:
             "SELECT * FROM chunk WHERE extraction_id = $extraction ORDER BY position;",
             {"extraction": extraction_id},
         )
+
+    async def extractions_of_case(self, case_id: str) -> list[Extraction]:
+        return await self._many(
+            Extraction,
+            "SELECT * FROM extraction WHERE case_id = $case ORDER BY created_at;",
+            {"case": case_id},
+        )
+
+    async def entity_by_value(self, kind: EntityKind, value: str) -> Entity | None:
+        entities = await self._many(
+            Entity,
+            "SELECT * FROM entity WHERE kind = $kind AND value = $value LIMIT 1;",
+            {"kind": kind.value, "value": value},
+        )
+        return entities[0] if entities else None
+
+    async def entities_of_case(self, case_id: str) -> list[CaseEntity]:
+        return await self._many(
+            CaseEntity,
+            "SELECT * FROM case_entity WHERE case_id = $case ORDER BY created_at;",
+            {"case": case_id},
+        )
+
+    async def cases_of_entity(self, entity_id: str) -> list[CaseEntity]:
+        return await self._many(
+            CaseEntity,
+            "SELECT * FROM case_entity WHERE entity_id = $entity ORDER BY created_at;",
+            {"entity": entity_id},
+        )
+
+    async def warnings_for(self, kind: EntityKind, value: str) -> list[OfficialWarning]:
+        return await self._many(
+            OfficialWarning,
+            "SELECT * FROM warning WHERE entity_kind = $kind AND entity_value = $value "
+            "ORDER BY captured_at;",
+            {"kind": kind.value, "value": value},
+        )
+
+    async def signals_of_case(self, case_id: str) -> list[Signal]:
+        return await self._many(
+            Signal,
+            "SELECT * FROM signal WHERE case_id = $case ORDER BY created_at, id;",
+            {"case": case_id},
+        )
+
+    async def current_verdict(self, case_id: str) -> Verdict | None:
+        verdicts = await self._many(
+            Verdict,
+            "SELECT * FROM verdict WHERE case_id = $case AND state = $state "
+            "ORDER BY version DESC LIMIT 1;",
+            {"case": case_id, "state": VerdictState.CURRENT.value},
+        )
+        return verdicts[0] if verdicts else None
 
     async def delete_tenant_data(self, tenant_id: str) -> None:
         await self._query("\n".join(DELETE_TENANT_STATEMENTS), {"tenant": tenant_id})
