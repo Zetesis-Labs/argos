@@ -59,8 +59,8 @@ artefactos a RustFS.
 | `argos/agents/` | Especialistas, `investigation_team`, redactor y sus herramientas acotadas; sin reglas de negocio |
 | `argos/platform/` | SurrealDB (HTTP y libro de trabajos), MCP, Agno DB, LiteLLM, trazas, reloj e ids |
 | `argos/api/` | Gateway HTTP y tarjeta A2A sobre AgentOS; sin `Any`, así que sin modelos de pydantic |
-| `argos/services/` | Procesos de larga vida: `dispatcher`, `worker`, `resumer` y `analyzer` |
-| `argos/devtools/` | `bootstrap-db`, `bootstrap-bus`, `bootstrap-store` y `spec-check` |
+| `argos/services/` | Procesos de larga vida: `dispatcher`, `worker`, `resumer`, `analyzer` y `janitor` |
+| `argos/devtools/` | `bootstrap-db`, `bootstrap-bus`, `bootstrap-store`, `rehearse-store` y `spec-check` |
 | `tests/` | Tests unitarios y un fichero por spec técnica activa |
 | `.devcontainer/` | Compose de desarrollo |
 
@@ -93,7 +93,8 @@ capas alternativas que dupliquen `core`, puertos o adaptadores.
 - El LLM no puntúa, autoriza, cambia estados ni decide reintentos. El nivel lo da
   `core.score`; las reglas no viven en prompts.
 - Los agentes usan SurrealDB solo mediante MCP de negocio y dentro de su tenant.
-  Root es exclusivo del bootstrap.
+  Root es exclusivo del bootstrap y cada workload entra con su propio usuario;
+  el de los agentes es de solo lectura.
 - Los workers son procesos deterministas y stateless, no agentes conversacionales.
 - Nada del texto completo entra en sesiones de Agno, mensajes NATS, logs o
   trazas. Los avisos breves no se persisten íntegros.

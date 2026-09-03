@@ -13,10 +13,10 @@ un núcleo determinista valida señales, calcula el nivel y gobierna los estados
 - **S01 implementada y verificada**: SurrealDB 3 con MCP, separación
   `agno/sessions` y `argos/ops`, LiteLLM, Langfuse, devcontainer y anclaje de
   specs a tests.
-- **S02 en implementación**: el libro de trabajos, el outbox, NATS JetStream,
-  RustFS, el worker de documentos, el clúster de agentes, el workflow de
-  veredicto y el gateway con sus capacidades ya tienen caso y test; quedan la
-  observabilidad enmascarada, el janitor y el endurecimiento de credenciales.
+- **S02 implementada**: libro de trabajos y outbox, NATS JetStream, RustFS,
+  worker de documentos, clúster de agentes, workflow de veredicto, gateway con
+  sus capacidades, janitor de retención, métricas y una identidad por workload.
+  Sus 53 casos tienen test.
 - Las verticales del análisis real —identificadores, dominio, puntuación,
   veredicto, fuentes y memoria— siguen el orden de `specs/README.md`.
 
@@ -127,6 +127,7 @@ docker exec argos-app-1 uv sync
 docker exec argos-app-1 uv run bootstrap-db
 docker exec argos-app-1 uv run bootstrap-bus
 docker exec argos-app-1 uv run bootstrap-store
+docker exec argos-app-1 uv run rehearse-store
 docker exec argos-app-1 uv run pytest
 docker exec argos-app-1 uv run spec-check
 docker exec argos-app-1 uv run ruff check .
