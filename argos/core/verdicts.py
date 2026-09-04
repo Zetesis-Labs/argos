@@ -15,6 +15,7 @@ from argos.core.model import (
     Entity,
     Insert,
     LedgerOp,
+    ReviewState,
     Signal,
     Update,
     Verdict,
@@ -74,7 +75,6 @@ def _signal_ops(
             Insert(
                 Signal(
                     id=identifier,
-                    tenant_id=case.tenant_id,
                     case_id=case.id,
                     analysis=drafted.analysis,
                     code=drafted.code,
@@ -108,7 +108,6 @@ def plan_analysis_completion(
     version = previous.version + 1 if previous is not None else 1
     verdict = Verdict(
         id=verdict_id(case.id, version),
-        tenant_id=case.tenant_id,
         case_id=case.id,
         version=version,
         level=draft.assessment.level,
@@ -139,13 +138,28 @@ def plan_analysis_completion(
     return AnalysisClosed(ops=tuple(ops), case=closed, verdict=verdict)
 
 
-def plan_analysis_failure(*, case: Case, code: str, now: datetime) -> tuple[LedgerOp, ...]:
+def plan_analysis_failure(*, case: Case, error: str, now: datetime) -> tuple[LedgerOp, ...]:
     """Un análisis que revienta deja el caso operable, nunca colgado en `analyzing`."""
     failed = replace(
+        case, state=CaseState.FAILED, error=error, updated_at=now, revision=case.revision + 1
+    )
+    return (Update(failed),)
+
+
+@dataclass(frozen=True)
+class Reviewed:
+    ops: tuple[LedgerOp, ...]
+    case: Case
+
+
+def plan_review(*, case: Case, review: ReviewState, now: datetime) -> Reviewed:
+    """Confirmar un caso es lo que da sentido a la memoria: sin revisión, la
+    reincidencia nunca se puede afirmar (R13)."""
+    marked = replace(
         case,
-        state=CaseState.FAILED,
-        public_error=code,
+        review_state=review,
+        reviewed_at=now,
         updated_at=now,
         revision=case.revision + 1,
     )
-    return (Update(failed),)
+    return Reviewed(ops=(Update(marked),), case=marked)

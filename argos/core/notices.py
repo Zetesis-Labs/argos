@@ -1,8 +1,7 @@
-"""Límites del aviso breve (R1) y su hash de deduplicación (R9)."""
+"""Límites del aviso (R1)."""
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 
@@ -32,7 +31,7 @@ class NoticeRejected:
 
 @dataclass(frozen=True)
 class NoticeAccepted:
-    notice_hash: str
+    pass
 
 
 def normalize_text(text: str) -> str:
@@ -48,16 +47,6 @@ def image_mime_of(image: bytes) -> str | None:
     return None
 
 
-def notice_hash(notice: Notice) -> str:
-    digest = hashlib.sha256()
-    digest.update(normalize_text(notice.text).encode())
-    for link in sorted(link.strip().lower() for link in notice.links):
-        digest.update(b"\0" + link.encode())
-    if notice.image is not None:
-        digest.update(b"\0img:" + hashlib.sha256(notice.image).digest())
-    return digest.hexdigest()
-
-
 def validate_notice(notice: Notice, limits: NoticeLimits) -> NoticeAccepted | NoticeRejected:
     if len(notice.text) > limits.max_text_chars:
         return NoticeRejected("notice.text_too_long")
@@ -70,4 +59,4 @@ def validate_notice(notice: Notice, limits: NoticeLimits) -> NoticeAccepted | No
             return NoticeRejected("notice.image_unsupported")
     if not normalize_text(notice.text) and not notice.links and notice.image is None:
         return NoticeRejected("notice.empty")
-    return NoticeAccepted(notice_hash=notice_hash(notice))
+    return NoticeAccepted()

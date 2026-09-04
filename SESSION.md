@@ -1,58 +1,65 @@
-# Sesión: recorte a prueba de concepto — actualizado 2026-09-04
+# Sesión: de SaaS multi-tenant a herramienta local — actualizado 2026-09-04
 
-## Objetivo
+## Qué es Argos
 
-Reducir Argos a lo que una prueba de concepto necesita para producir un
-veredicto útil, y cerrar el agujero que impedía producirlo: el aviso nunca
-llegaba al analizador y las marcas decisivas las declaraba el modelo.
+Un devcontainer que te bajas y ejecutas en tu máquina. Un solo usuario: quien lo
+arranca. `argos analyze "…"` devuelve un veredicto explicado. Nada de lo que
+analizas sale de ahí.
 
-## Qué se ha hecho
+## Qué se ha hecho en esta sesión
 
-**Retirada la vertical asíncrona.** Fuera AgentOS, A2A, NATS JetStream, RustFS,
-Langfuse, el libro de trabajos con outbox e intentos, el worker de PDF/OCR y los
-procesos dispatcher, resumer, analizador y janitor. Su diseño queda en
-`specs/parked/S02-pipeline-asincrono.md` y su código en el tag `s02-async`.
+**Primer recorte: la vertical asíncrona.** Fuera AgentOS, A2A, NATS JetStream,
+RustFS, Langfuse, el libro de trabajos con outbox e intentos, el worker de
+PDF/OCR y los procesos dispatcher, resumer, analizador y janitor. Diseño en
+`specs/parked/S02-pipeline-asincrono.md`, código en el tag `s02-async`.
 
-De 20 contenedores a 4 por defecto (`app`, `surrealdb`, `surrealdb-test`,
-`litellm`; `surrealist`, `knowledge` y `gateway` bajo perfil). De 6 procesos de
-Argos a 1. De 8 agentes más equipo a 4 sin equipo. LiteLLM pasa a la imagen sin
-base de datos, así que Postgres desaparece con Langfuse.
+**Segundo recorte: la multitenencia.** Rubén señaló que va contra el producto.
+Fuera la tabla `tenant` y el `tenant_id` de cuatro tablas, `core/identity.py`
+entero, los tokens bearer, los roles, el curador, `reviewed_by`, R16 tal como
+estaba y cinco casos de spec que probaban aislamiento entre clientes que no
+existen. Atravesaba 19 de 53 ficheros.
 
-**Cerrado el agujero de W1.** El caso guarda el texto del aviso y sus enlaces, y
-`build_brief` los pasa al prompt. Antes el caso solo guardaba un hash y el brief
-solo llevaba referencias de extracción: con documentos fuera, no había nada que
-analizar.
+Con ello cayeron tres cosas más, decididas explícitamente:
 
-**Señales decisivas por código.** `argos/core/identifiers.py` extrae dominio,
-correo, IBAN, teléfono, wallet y arroba con expresiones regulares, dígitos de
-control ISO 13616 y dominio registrable. `argos/usecases/signals.py` consulta el
-catálogo proyectado y la memoria compartida y escribe las señales `official` y
-`recidivism`. El parser del informe del modelo descarta esos campos, y una señal
-cuya cita no aparece literalmente en el aviso no puntúa.
+- **Errores públicos**: fuera `public_code` y su catálogo. El destinatario de un
+  fallo es quien ejecuta Argos; se le muestra entero.
+- **Retención**: fuera `expires_at`. Un análisis local se guarda hasta que su
+  dueño lo borra.
+- **Deduplicación por ventana**: fuera. Repetir un aviso abre un caso nuevo; la
+  ventana devolvía casos muertos durante 24 h.
 
-**Specs alineadas.** Constitución reescrita en commit propio: §9 y §10 pasan de
-«NATS es el bus» y «RustFS es el almacén» a invariantes de cuándo y cómo
-volverán. A12 de la funcional cambia: el análisis de un aviso breve ocurre dentro
-de la llamada. S02 se reescribe como `specs/S02-nucleo-y-agentes.md` con 22
-casos; los números que sobreviven conservan su significado.
+**Añadido: la CLI.** `argos analyze/show/ask/review` es la superficie principal,
+con la API HTTP local debajo compartiendo cableado (`argos/wiring.py`).
+
+**Cerrados tres huecos operativos** que el recorte destapó:
+
+- `analyze_case` relanzaba y devolvía un 500 de uvicorn; ahora devuelve `Failed`
+  con el error real y el caso queda `failed`, nunca colgado en `analyzing`.
+- R15 era decorativo; ahora el presupuesto se aplica con `asyncio.timeout`.
+- `/health` mentía; ahora responde 503 si el libro no contesta.
+- Nada escribía `review_state`, así que la reincidencia era inalcanzable.
+  `argos review <caso> confirmed` la desbloquea.
 
 ## Estado de la puerta
 
-Dentro de `argos-app-1`: `pytest` 59 passed, `spec-check`, `ruff`, `mypy` y
-`pyright` limpios. Esquema en versión 6.
+Dentro de `argos-app-1`: `pytest` 64 passed, `spec-check`, `ruff`, `mypy` y
+`pyright` limpios. Esquema en versión 7.
+
+Probado de punta a punta con **gpt-5.6-terra real** (la clave está en
+`.devcontainer/.env`, así que la prueba costó dinero): un aviso que cita
+`example-broker.test` sale `CRÍTICO` con la advertencia de la FCA como indicio
+oficial escrito por el código, y las señales inventadas por el modelo se
+descartan si su cita no está en el aviso.
 
 ## Lo que sigue abierto
 
-- **La reincidencia no puede dispararse.** Nada escribe `review_state`, así que
-  `history.confirmed` nunca es cierto. Está implementada y probada, pero el
-  único camino vivo a `critical` es la advertencia oficial. Lo desbloquea la
-  revisión del curador, que por eso sube al segundo puesto del roadmap.
-- **Ningún veredicto medido contra datos reales.** Es el motivo del recorte y
-  sigue siendo el trabajo pendiente número uno: un conjunto de avisos reales
-  etiquetados con el que calibrar la escalera de R4.
-- **`docs/revision-2026-09-04.md` sigue sin commitear.** El repo es público y el
-  informe documenta que las afirmaciones de cierre de S02 no eran exactas.
-  Decisión de Rubén.
-- Verticales siguientes según `specs/README.md`: dominio, puntuación con datos
-  reales, fuentes oficiales y memoria.
-- El explorador OKF y el corpus no han cambiado; S03 sigue en verde.
+- **Ningún veredicto medido contra datos reales.** Es el trabajo número uno.
+- **El catálogo tiene tres advertencias sintéticas.** Un aviso que no las cite
+  sale `undetermined` o `low`. Lo arregla la vertical de fuentes (S08), que es
+  el primer punto del roadmap.
+- **Nadie loguea**: `structlog` está en las dependencias sin un solo uso.
+  Operar el API es a ciegas; la CLI al menos imprime.
+- **El modelo `mock` no cumple el contrato del informe**, así que el camino
+  feliz solo se ve con una clave real. Decidido dejarlo así de momento.
+- **`docs/revision-2026-09-04.md` sigue sin commitear.** Repo público. Decisión
+  de Rubén.

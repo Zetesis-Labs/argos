@@ -1,5 +1,5 @@
-"""Herramientas de negocio de los agentes. Solo lectura, por capacidad, tenant y
-caso. Ninguna entrega SurrealQL general ni credenciales internas."""
+"""Herramientas de negocio de los agentes. Solo lectura y acotadas por capacidad
+y caso. Ninguna entrega SurrealQL general."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ CASE_NOT_FOUND = "case.not_found"
 @dataclass(frozen=True)
 class ToolCaller:
     agent: AgentName
-    tenant_id: str
     case_id: str
 
 
@@ -49,8 +48,7 @@ async def _authorized_case(
 ) -> ToolDenied | None:
     if not allows(caller.agent, capability):
         return ToolDenied(NOT_AUTHORIZED)
-    case = await services.ledger.case(caller.case_id)
-    if case is None or case.tenant_id != caller.tenant_id:
+    if await services.ledger.case(caller.case_id) is None:
         return ToolDenied(CASE_NOT_FOUND)
     return None
 
@@ -90,7 +88,7 @@ async def find_registry_matches(
 async def find_entity_history(
     services: Bookkeeping, caller: ToolCaller, *, kind: EntityKind, value: str
 ) -> EntityHistory | ToolDenied:
-    """R29: al tenant solo le llegan agregados, nunca casos, citas ni tenants ajenos."""
+    """Agregados de la memoria: cuántos casos, desde cuándo y si alguno se confirmó."""
     if not allows(caller.agent, Capability.FIND_ENTITY_HISTORY):
         return ToolDenied(NOT_AUTHORIZED)
     normalized = normalized_identifier(kind, value)
@@ -104,10 +102,7 @@ async def find_entity_history(
             continue
         appearances.append(
             CaseAppearance(
-                case_id=case.id,
-                tenant_id=case.tenant_id,
-                review_state=case.review_state,
-                seen_at=case.created_at,
+                case_id=case.id, review_state=case.review_state, seen_at=case.created_at
             )
         )
     return aggregate_history(entity.kind, entity.value, appearances)

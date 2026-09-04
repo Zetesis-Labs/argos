@@ -4,20 +4,24 @@ Segunda opinión ante un posible fraude financiero. Argos recibe un aviso —un
 mensaje o un enlace— y produce un veredicto explicado: nivel de riesgo, indicios
 con evidencia, entidades implicadas, reincidencias y acciones recomendadas.
 
+**Se ejecuta en tu máquina.** Te bajas el devcontainer, lo abres y lo usas desde
+la terminal. Un solo usuario, sin cuentas, sin credenciales y sin que nada de lo
+que analices salga de ahí.
+
 No afirma que algo sea una estafa. Los agentes reúnen e interpretan evidencias;
 un núcleo determinista valida señales, calcula el nivel y gobierna los estados.
 
 ## Estado del proyecto
 
-Argos es una prueba de concepto deliberadamente pequeña: un proceso, tres
+Argos es una prueba de concepto deliberadamente pequeña: una CLI, cuatro
 capacidades y el catálogo curado que viaja con el checkout.
 
 - **S01 implementada y verificada**: SurrealDB 3 con MCP, separación
   `agno/sessions` y `argos/ops`, LiteLLM, devcontainer y anclaje de specs a tests.
 - **S02 implementada**: caso con su aviso, extracción de identificadores por
   código, señales oficiales y de reincidencia derivadas del catálogo y de la
-  memoria, cuatro agentes de apoyo, núcleo de puntuación y gateway con sus tres
-  capacidades.
+  memoria, cuatro agentes de apoyo, núcleo de puntuación, y CLI y API local con
+  sus cuatro capacidades.
 - **S03 implementada**: corpus OKF en Markdown/Git, bundle validado y
   versionado, explorador gráfico opcional y proyección local atómica en
   SurrealDB.
@@ -32,21 +36,26 @@ retiró el 2026-09-04 por desproporcionada. Su diseño está en
 ## Arquitectura
 
 ```text
-POST /v1/notices → gateway → núcleo (identificadores, señales, nivel)
-                                 │              │
-                            SurrealDB      triage · patterns
-                            argos/ops      writer · conversation
-                                 │
-                    proyección del catálogo OKF
+argos analyze "…"  ─┐
+POST /v1/notices   ─┴→ núcleo (identificadores, señales, nivel)
+                            │              │
+                       SurrealDB      triage · patterns
+                       argos/ops      writer · conversation
+                            │
+               proyección del catálogo OKF
 ```
 
-- **El gateway** es el único proceso de larga vida. Analiza el aviso dentro de
-  la llamada: no hay cola, no hay trabajo durable y no hay nada que reanudar.
+- **La terminal** es la superficie principal; la API HTTP local sirve lo mismo
+  por debajo. El aviso se analiza dentro de la llamada: no hay cola, no hay
+  trabajo durable y no hay nada que reanudar.
+- **Nadie autentica a nadie.** El proceso escucha en loopback dentro de tu
+  contenedor. Un error se muestra entero, con su tipo y su mensaje: el
+  destinatario eres tú.
 - **`argos/core`** no hace I/O. Ahí viven la extracción de identificadores, el
   filtro de evidencia, la puntuación y la composición del veredicto.
 - **SurrealDB `argos/ops`** es la fuente de verdad de casos, entidades, señales
-  y veredictos. Un agente solo la lee por herramientas acotadas por capacidad,
-  tenant y caso.
+  y veredictos. Un agente solo la lee por herramientas acotadas por capacidad y
+  caso, y su usuario de base de datos es de solo lectura.
 - **El conocimiento curado** se escribe como fichas Markdown en Git. El bundle
   OKF versionado alimenta el explorador y una proyección reconstruible en
   SurrealDB; Argos no necesita red para analizar.
@@ -69,10 +78,8 @@ POST /v1/notices → gateway → núcleo (identificadores, señales, nivel)
 Un informe de un modelo que se declara oficial o reincidente se descarta al
 parsearlo, y una señal cuya cita no aparece en el aviso no puntúa.
 
-La reincidencia está implementada y probada pero todavía no puede dispararse:
-exige un caso previo marcado como confirmado y nada en el producto escribe esa
-marca hasta que exista la revisión del curador. El camino vivo a `critical` es
-la advertencia oficial vigente.
+Los dos caminos a `critical` son la advertencia oficial vigente y la
+reincidencia sobre un caso que marcaste `confirmed`.
 
 ## Agentes
 
@@ -83,15 +90,17 @@ la advertencia oficial vigente.
 | `verdict_writer` | Explicar un nivel calculado por código |
 | `conversation_agent` | Responder sobre un caso sin mutar su veredicto |
 
-## Capacidades del gateway
+## Cómo se usa
 
-| Capacidad | Ruta |
-|---|---|
-| `analyze_notice` | `POST /v1/notices` |
-| `get_case` | `GET /v1/cases/{case_id}` |
-| `ask_case` | `POST /v1/cases/{case_id}/questions` |
+| Qué | Terminal | HTTP |
+|---|---|---|
+| Analizar un aviso | `argos analyze "texto" --link url` | `POST /v1/notices` |
+| Ver un caso | `argos show <case_id>` | `GET /v1/cases/{case_id}` |
+| Preguntar sobre él | `argos ask <case_id> "…"` | `POST /v1/cases/{case_id}/questions` |
+| Marcarlo revisado | `argos review <case_id> confirmed` | `POST /v1/cases/{case_id}/review` |
 
-El tenant sale siempre de la credencial, nunca del cuerpo.
+Marcar un caso `confirmed` es lo que hace que la reincidencia aparezca en el
+siguiente aviso que cite el mismo identificador.
 
 ## Arrancar el entorno
 
@@ -113,6 +122,14 @@ plantilla opcional:
 
 ```bash
 cp .env.example .devcontainer/.env
+```
+
+Para analizar un aviso:
+
+```bash
+docker exec argos-app-1 uv run argos analyze "Invierte y dobla tu dinero en example-broker.test"
+docker exec argos-app-1 uv run argos show <case_id>
+docker exec argos-app-1 uv run argos review <case_id> confirmed
 ```
 
 Para comprobar el checkout:
@@ -150,7 +167,7 @@ y se revisa junto al corpus en Git.
 
 | Servicio | URL en el host | Perfil |
 |---|---|---|
-| Gateway | `http://localhost:7777` | `services` |
+| API local | `http://localhost:7777` | `services` |
 | LiteLLM | `http://localhost:4100` | por defecto |
 | SurrealDB | `http://localhost:8100` (MCP en `/mcp`) | por defecto |
 | Surrealist | `http://localhost:8200` | `tools` |
@@ -175,5 +192,6 @@ Lee en este orden:
 - `typing.Any` y las supresiones de tipos están prohibidos, también en tests.
 - El LLM no puntúa, no decide permisos y no controla transiciones.
 - Ningún proveedor de modelos se llama fuera de LiteLLM.
-- Ningún aviso completo entra en sesiones, logs ni errores públicos.
+- El aviso vive en su caso y en el prompt del análisis; no entra en sesiones ni
+  en logs.
 - Datos de prueba exclusivamente sintéticos.

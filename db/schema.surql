@@ -32,8 +32,8 @@ DEFINE TABLE IF NOT EXISTS schema_version SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS version ON schema_version TYPE int;
 DEFINE FIELD IF NOT EXISTS applied_at ON schema_version TYPE datetime DEFAULT time::now();
 
--- Casos y memoria (S02 §6). Toda fila de negocio lleva tenant_id y revision
--- para transiciones condicionales.
+-- Casos y memoria. Argos es local y de un solo usuario: no hay tenant, no hay
+-- credenciales de cliente y una fila no pertenece a nadie más que a su caso.
 
 REMOVE TABLE IF EXISTS artifact;
 REMOVE TABLE IF EXISTS document;
@@ -42,34 +42,36 @@ REMOVE TABLE IF EXISTS attempt;
 REMOVE TABLE IF EXISTS outbox_entry;
 REMOVE TABLE IF EXISTS extraction;
 REMOVE TABLE IF EXISTS chunk;
+REMOVE TABLE IF EXISTS tenant;
 
-DEFINE TABLE IF NOT EXISTS tenant SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS name ON tenant TYPE string;
-DEFINE FIELD IF NOT EXISTS active ON tenant TYPE bool;
-DEFINE FIELD IF NOT EXISTS revision ON tenant TYPE int;
+-- Un DEFINE TABLE OVERWRITE no retira las definiciones de campo: hay que
+-- quitarlas una a una para que el esquema quede en su forma nueva.
+REMOVE INDEX IF EXISTS case_tenant_notice ON case;
+REMOVE FIELD IF EXISTS tenant_id ON case;
+REMOVE FIELD IF EXISTS notice_hash ON case;
+REMOVE FIELD IF EXISTS correlation_id ON case;
+REMOVE FIELD IF EXISTS previous_case_id ON case;
+REMOVE FIELD IF EXISTS reviewed_by ON case;
+REMOVE FIELD IF EXISTS public_error ON case;
+REMOVE FIELD IF EXISTS expires_at ON case;
+REMOVE FIELD IF EXISTS tenant_id ON case_entity;
+REMOVE FIELD IF EXISTS tenant_id ON signal;
+REMOVE FIELD IF EXISTS tenant_id ON verdict;
 
 DEFINE TABLE IF NOT EXISTS case SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS tenant_id ON case TYPE string;
 DEFINE FIELD IF NOT EXISTS state ON case TYPE string;
-DEFINE FIELD IF NOT EXISTS notice_hash ON case TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS notice_text ON case TYPE string DEFAULT '';
 DEFINE FIELD IF NOT EXISTS notice_links ON case TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS language ON case TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS correlation_id ON case TYPE string;
-DEFINE FIELD IF NOT EXISTS previous_case_id ON case TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS review_state ON case TYPE string DEFAULT 'unreviewed';
 DEFINE FIELD IF NOT EXISTS reviewed_at ON case TYPE option<datetime>;
-DEFINE FIELD IF NOT EXISTS reviewed_by ON case TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS public_error ON case TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS error ON case TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON case TYPE datetime;
 DEFINE FIELD IF NOT EXISTS updated_at ON case TYPE datetime;
-DEFINE FIELD IF NOT EXISTS expires_at ON case TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS revision ON case TYPE int;
-DEFINE INDEX IF NOT EXISTS case_tenant_notice ON case FIELDS tenant_id, notice_hash, created_at;
 
--- Memoria compartida entre tenants (constitución §6, R29): la entidad, sus
--- vínculos y las advertencias oficiales no llevan tenant. El vínculo del caso
--- con la entidad sí, y es el único camino de un tenant a sus casos.
+-- Memoria entre casos (R29): la entidad y sus vínculos sobreviven al caso que
+-- los descubrió, y el vínculo caso-entidad es lo que permite ver reincidencias.
 
 DEFINE TABLE IF NOT EXISTS entity SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS kind ON entity TYPE string;
@@ -89,7 +91,6 @@ DEFINE FIELD IF NOT EXISTS revision ON entity_link TYPE int;
 DEFINE INDEX IF NOT EXISTS entity_link_pair ON entity_link FIELDS left_entity_id, right_entity_id UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS case_entity SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS tenant_id ON case_entity TYPE string;
 DEFINE FIELD IF NOT EXISTS case_id ON case_entity TYPE string;
 DEFINE FIELD IF NOT EXISTS entity_id ON case_entity TYPE string;
 DEFINE FIELD IF NOT EXISTS created_at ON case_entity TYPE datetime;
@@ -143,7 +144,6 @@ DEFINE FIELD IF NOT EXISTS source_head ON knowledge_edge TYPE string;
 DEFINE INDEX IF NOT EXISTS knowledge_edge_identity ON knowledge_edge FIELDS source_knowledge_id, label, target_knowledge_id UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS signal SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS tenant_id ON signal TYPE string;
 DEFINE FIELD IF NOT EXISTS case_id ON signal TYPE string;
 DEFINE FIELD IF NOT EXISTS analysis ON signal TYPE string;
 DEFINE FIELD IF NOT EXISTS code ON signal TYPE string;
@@ -159,7 +159,6 @@ DEFINE FIELD IF NOT EXISTS revision ON signal TYPE int;
 DEFINE INDEX IF NOT EXISTS signal_case ON signal FIELDS case_id;
 
 DEFINE TABLE IF NOT EXISTS verdict SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS tenant_id ON verdict TYPE string;
 DEFINE FIELD IF NOT EXISTS case_id ON verdict TYPE string;
 DEFINE FIELD IF NOT EXISTS version ON verdict TYPE int;
 DEFINE FIELD IF NOT EXISTS level ON verdict TYPE string;
@@ -174,4 +173,4 @@ DEFINE FIELD IF NOT EXISTS revision ON verdict TYPE int;
 DEFINE INDEX IF NOT EXISTS verdict_case_version ON verdict FIELDS case_id, version UNIQUE;
 DEFINE INDEX IF NOT EXISTS verdict_case_state ON verdict FIELDS case_id, state;
 
-UPSERT schema_version:current SET version = 6;
+UPSERT schema_version:current SET version = 7;

@@ -20,7 +20,6 @@ from argos.core.model import (
     case_entity_id,
     entity_id,
 )
-from argos.core.policy import Retention
 
 
 @dataclass(frozen=True)
@@ -34,11 +33,6 @@ class PlannedNoticeCase:
     case: Case
 
 
-@dataclass(frozen=True)
-class ReusedCase:
-    case_id: str
-
-
 def entity_memory_ops(
     *,
     case: Case,
@@ -47,7 +41,7 @@ def entity_memory_ops(
     linked: frozenset[str],
     now: datetime,
 ) -> tuple[LedgerOp, ...]:
-    """La entidad es compartida; el vínculo con el caso pertenece a su tenant (R29)."""
+    """La entidad es memoria: un mismo dominio o IBAN es un solo nodo entre casos."""
     ops: list[LedgerOp] = []
     seen: set[str] = set()
     for drafted in entities:
@@ -89,7 +83,6 @@ def entity_memory_ops(
                 Insert(
                     CaseEntity(
                         id=case_entity_id(case.id, identifier),
-                        tenant_id=case.tenant_id,
                         case_id=case.id,
                         entity_id=identifier,
                         created_at=now,
@@ -102,9 +95,6 @@ def entity_memory_ops(
 
 def plan_notice_case(
     *,
-    tenant_id: str,
-    existing: Case | None,
-    notice_hash: str,
     notice_text: str,
     notice_links: Sequence[str],
     language: str | None,
@@ -112,35 +102,22 @@ def plan_notice_case(
     known: Mapping[str, Entity],
     case_id: str,
     now: datetime,
-    retention: Retention,
-    correlation_id: str,
-) -> PlannedNoticeCase | ReusedCase:
-    """R9: el mismo aviso dentro de la ventana devuelve su caso, no abre otro."""
-    if existing is not None:
-        return ReusedCase(case_id=existing.id)
+) -> PlannedNoticeCase:
     case = Case(
         id=case_id,
-        tenant_id=tenant_id,
         state=CaseState.RECEIVED,
-        notice_hash=notice_hash,
         notice_text=notice_text,
         notice_links=tuple(notice_links),
         language=language,
-        correlation_id=correlation_id,
-        previous_case_id=None,
         review_state=ReviewState.UNREVIEWED,
         reviewed_at=None,
-        reviewed_by=None,
-        public_error=None,
+        error=None,
         created_at=now,
         updated_at=now,
-        expires_at=now + retention.case,
         revision=0,
     )
     ops: list[LedgerOp] = [Insert(case)]
     ops.extend(
-        entity_memory_ops(
-            case=case, entities=entities, known=known, linked=frozenset(), now=now
-        )
+        entity_memory_ops(case=case, entities=entities, known=known, linked=frozenset(), now=now)
     )
     return PlannedNoticeCase(ops=tuple(ops), case=case)

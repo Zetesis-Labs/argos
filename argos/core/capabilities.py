@@ -1,5 +1,5 @@
-"""Capacidades públicas del gateway. Es lo único que Argos publica:
-ni un especialista ni una pieza interna aparecen aquí."""
+"""Capacidades de Argos. Es lo único que se publica: ni un especialista ni una
+pieza interna aparecen aquí."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ class CapabilityName(StrEnum):
     ANALYZE_NOTICE = "analyze_notice"
     GET_CASE = "get_case"
     ASK_CASE = "ask_case"
+    REVIEW_CASE = "review_case"
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,12 @@ GATEWAY_CAPABILITIES = (
         method="POST",
         path="/v1/cases/{case_id}/questions",
         description="Responde una duda sobre un veredicto emitido con su evidencia.",
+    ),
+    CapabilitySpec(
+        name=CapabilityName.REVIEW_CASE,
+        method="POST",
+        path="/v1/cases/{case_id}/review",
+        description="Marca un caso como confirmado o falso positivo.",
     ),
 )
 

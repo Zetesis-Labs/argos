@@ -18,7 +18,6 @@ from argos.core.model import (
     OfficialWarning,
     RiskLevel,
     Signal,
-    Tenant,
     Verdict,
     VerdictOutcome,
 )
@@ -43,13 +42,7 @@ class LedgerError(RuntimeError):
 class Ledger(Protocol):
     async def commit(self, ops: Sequence[LedgerOp]) -> None: ...
 
-    async def tenant(self, tenant_id: str) -> Tenant | None: ...
-
     async def case(self, case_id: str) -> Case | None: ...
-
-    async def case_by_notice(
-        self, tenant_id: str, notice_hash: str, *, since: datetime
-    ) -> Case | None: ...
 
     async def entity_by_value(self, kind: EntityKind, value: str) -> Entity | None: ...
 
@@ -65,7 +58,7 @@ class Ledger(Protocol):
 
     async def current_verdict(self, case_id: str) -> Verdict | None: ...
 
-    async def delete_tenant_data(self, tenant_id: str) -> None: ...
+    async def delete_case(self, case_id: str) -> None: ...
 
 
 class KnowledgeProjection(Protocol):
@@ -81,10 +74,8 @@ class KnowledgeProjection(Protocol):
 class CaseBrief:
     """Lo que el investigador recibe: el aviso y los identificadores ya extraídos."""
 
-    tenant_id: str
     case_id: str
     language: str
-    correlation_id: str
     text: str
     links: tuple[str, ...]
     entities: tuple[DraftEntity, ...]

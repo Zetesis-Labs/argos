@@ -1,8 +1,13 @@
 # Argos
 
-Servicio que analiza avisos relacionados con posible fraude financiero y
-devuelve un veredicto explicado. Prueba de concepto deliberadamente pequeña: un
-proceso, tres capacidades HTTP, SurrealDB, LiteLLM y cuatro agentes de apoyo.
+Herramienta local que analiza avisos relacionados con posible fraude financiero
+y devuelve un veredicto explicado. **Se distribuye como un devcontainer que
+alguien se baja y ejecuta en su máquina: un solo usuario, sin cuentas y sin
+credenciales.** Prueba de concepto pequeña: una CLI, una API local, SurrealDB,
+LiteLLM y cuatro agentes de apoyo.
+
+No reintroduzcas tenants, tokens, roles ni aislamiento entre clientes: van
+contra el producto y se retiraron el 2026-09-04.
 
 La vertical asíncrona anterior (AgentOS, A2A, NATS, RustFS, worker de PDF y sus
 procesos auxiliares) se retiró el 2026-09-04. Su diseño está aparcado en
@@ -54,7 +59,7 @@ solo en loopback.
 | `specs/constitution.md` | Invariantes de producto, datos y arquitectura |
 | `specs/argos/veredicto/functional-specs.md` | W1–W5 y R1–R29 |
 | `specs/S01-plataforma.md` | Base implementada y casos anclados |
-| `specs/S02-nucleo-y-agentes.md` | Caso, identificadores, señales por código, agentes y gateway |
+| `specs/S02-nucleo-y-agentes.md` | Caso, identificadores, señales por código, agentes, CLI y API |
 | `specs/parked/` | Diseño aparcado; `spec-check` no lo recorre |
 | `db/schema.surql` | Esquema SurrealDB idempotente; lo aplica `bootstrap-db` |
 | `argos/core/` | Funciones puras: modelo, puertos, planes del libro, catálogo de agentes, señales, puntuación y veredicto; sin I/O |
@@ -62,8 +67,9 @@ solo en loopback.
 | `argos/tools/` | Adaptadores externos y fakes |
 | `argos/agents/` | Los cuatro agentes y sus herramientas acotadas; sin reglas de negocio |
 | `argos/platform/` | SurrealDB (HTTP y libro), MCP, Agno DB, LiteLLM, reloj e ids |
-| `argos/api/` | Gateway HTTP; sin `Any`, así que sin modelos de pydantic |
-| `argos/services/` | Parada limpia de un proceso de larga vida |
+| `argos/api/` | API HTTP local; sin `Any`, así que sin modelos de pydantic |
+| `argos/cli.py` | `argos analyze/show/ask/review`: la superficie principal |
+| `argos/wiring.py` | Cableado único que comparten la CLI y el API |
 | `argos/devtools/` | Bootstraps, proyección del catálogo y `spec-check` |
 | `tests/` | Tests unitarios y un fichero por spec técnica activa |
 | `.devcontainer/` | Compose de desarrollo |
@@ -72,8 +78,11 @@ No crear capas alternativas que dupliquen `core`, puertos o adaptadores.
 
 ## Arquitectura obligatoria
 
-- El gateway es el único proceso. Un aviso se analiza dentro de su llamada.
-- Se publica el gateway, nunca un especialista: sin tarjeta de agente ni A2A.
+- La CLI es la superficie principal y la API local sirve lo mismo por debajo.
+  Un aviso se analiza dentro de su llamada.
+- No hay autenticación: el proceso escucha en loopback dentro del contenedor de
+  su usuario. Un error se muestra entero; el destinatario es quien lo ejecuta.
+- Se publican capacidades, nunca un especialista: sin tarjeta de agente ni A2A.
 - Coordinar dos especialistas es un bucle en código. No hay Team ni Workflow de
   Agno mientras eso baste.
 - Un agente se añade cuando hay una decisión que un modelo hace mejor que el
@@ -83,9 +92,10 @@ No crear capas alternativas que dupliquen `core`, puertos o adaptadores.
   parser del informe descarta esos campos aunque el modelo los declare.
 - Una señal cuya cita no aparece literalmente en el aviso no puntúa.
 - `argos/ops` es la fuente de verdad. Un agente accede por herramientas acotadas
-  por capacidad, tenant y caso; nunca por SurrealQL libre.
-- El caso guarda el aviso: sin su texto no hay análisis ni reproducibilidad.
-  Caduca con el caso y no entra en sesiones, logs ni errores públicos.
+  por capacidad y caso; nunca por SurrealQL libre, y su usuario es de solo lectura.
+- El caso guarda el aviso: sin su texto no hay análisis ni reproducibilidad. No
+  caduca solo y no entra en sesiones ni en logs.
+- Marcar un caso `confirmed` es lo único que hace visible una reincidencia.
 - Toda transición es una escritura condicional por revisión.
 - El conocimiento curado se versiona en Git y se proyecta en SurrealDB.
   Analizar nunca depende de un proveedor remoto.
@@ -95,11 +105,11 @@ No crear capas alternativas que dupliquen `core`, puertos o adaptadores.
 
 - El LLM no puntúa, autoriza, cambia estados ni decide reintentos. El nivel lo da
   `core.score`; las reglas no viven en prompts.
-- Los agentes leen SurrealDB solo por sus herramientas y dentro de su tenant.
-  Root es exclusivo del bootstrap y cada workload entra con su propio usuario;
-  el de los agentes es de solo lectura.
+- Los agentes leen SurrealDB solo por sus herramientas. Root es exclusivo del
+  bootstrap, el proceso entra con su propio usuario y el de los agentes es de
+  solo lectura.
 - El aviso vive en su caso y en el prompt del análisis. No entra en sesiones de
-  Agno, logs ni errores públicos.
+  Agno ni en logs.
 - Ninguna llamada a OpenAI sale de LiteLLM. Tests con `mock` o fakes y sin gasto
   por defecto. No añadir adaptadores ni configuración de otros proveedores.
 - Código, identificadores y rutas en inglés; documentación, comentarios útiles y

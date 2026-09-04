@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+argos = "argos.cli:main"
 bootstrap-db = "argos.devtools.bootstrap_db:main"
 bootstrap-local = "argos.devtools.bootstrap_local:main"
 project-knowledge = "argos.devtools.project_knowledge:main"

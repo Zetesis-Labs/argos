@@ -18,7 +18,6 @@ from argos.core.model import (
     LedgerRecord,
     OfficialWarning,
     Signal,
-    Tenant,
     Verdict,
     VerdictState,
     table_name,
@@ -84,9 +83,6 @@ class InMemoryKnowledgeProjection:
         return True
 
 
-SHARED_RECORDS = (Entity, EntityLink, OfficialWarning)
-
-
 def _unique_key(record: LedgerRecord) -> tuple[object, ...] | None:
     match record:
         case Entity():
@@ -144,27 +140,9 @@ class InMemoryLedger:
     def _all(self, table: str) -> list[LedgerRecord]:
         return [row for (name, _), row in self._rows.items() if name == table]
 
-    async def tenant(self, tenant_id: str) -> Tenant | None:
-        row = self._rows.get(("tenant", tenant_id))
-        return row if isinstance(row, Tenant) else None
-
     async def case(self, case_id: str) -> Case | None:
         row = self._rows.get(("case", case_id))
         return row if isinstance(row, Case) else None
-
-    async def case_by_notice(
-        self, tenant_id: str, notice_hash: str, *, since: datetime
-    ) -> Case | None:
-        matches = [
-            row
-            for row in self._all("case")
-            if isinstance(row, Case)
-            and row.tenant_id == tenant_id
-            and row.notice_hash == notice_hash
-            and row.created_at >= since
-        ]
-        matches.sort(key=lambda row: row.created_at, reverse=True)
-        return matches[0] if matches else None
 
     async def entity_by_value(self, kind: EntityKind, value: str) -> Entity | None:
         for row in self._all("entity"):
@@ -223,18 +201,18 @@ class InMemoryLedger:
         verdicts.sort(key=lambda row: row.version, reverse=True)
         return verdicts[0] if verdicts else None
 
-    async def delete_tenant_data(self, tenant_id: str) -> None:
-        doomed = [key for key, row in self._rows.items() if _belongs_to(row, tenant_id)]
+    async def delete_case(self, case_id: str) -> None:
+        doomed = [key for key, row in self._rows.items() if _belongs_to_case(row, case_id)]
         for key in doomed:
             del self._rows[key]
 
 
-def _belongs_to(record: LedgerRecord, tenant_id: str) -> bool:
-    if isinstance(record, Tenant):
-        return record.id == tenant_id
-    if isinstance(record, SHARED_RECORDS):
-        return False
-    return record.tenant_id == tenant_id
+def _belongs_to_case(record: LedgerRecord, case_id: str) -> bool:
+    if isinstance(record, Case):
+        return record.id == case_id
+    if isinstance(record, (CaseEntity, Signal, Verdict)):
+        return record.case_id == case_id
+    return False
 
 
 class ScriptedInvestigator:

@@ -31,6 +31,9 @@ from argos.platform.llm import build_model, close_model
 from argos.usecases.deps import Bookkeeping
 from argos.usecases.tools import ToolCaller
 
+# Argos es local y de un solo usuario: Agno necesita un identificador, no una identidad.
+LOCAL_USER = "local"
+
 ANALYSIS_OF_AGENT: Mapping[AgentName, Analysis] = {
     AgentName.TRIAGE: Analysis.TRIAGE,
     AgentName.PATTERNS: Analysis.PATTERNS,
@@ -67,11 +70,10 @@ def build_agent(
     *,
     model: OpenAIChat,
     services: Bookkeeping,
-    tenant_id: str,
     case_id: str,
     db: BaseDb | None,
 ) -> Agent:
-    caller = ToolCaller(agent=agent, tenant_id=tenant_id, case_id=case_id)
+    caller = ToolCaller(agent=agent, case_id=case_id)
     return Agent(
         name=str(agent),
         role=ROLES[agent],
@@ -144,23 +146,13 @@ class AgentAdvisor:
 
 
 def build_advisor(
-    model: OpenAIChat,
-    *,
-    services: Bookkeeping,
-    tenant_id: str,
-    case_id: str,
-    db: BaseDb | None = None,
+    model: OpenAIChat, *, services: Bookkeeping, case_id: str, db: BaseDb | None = None
 ) -> AgentAdvisor:
     return AgentAdvisor(
         build_agent(
-            AgentName.CONVERSATION,
-            model=model,
-            services=services,
-            tenant_id=tenant_id,
-            case_id=case_id,
-            db=db,
+            AgentName.CONVERSATION, model=model, services=services, case_id=case_id, db=db
         ),
-        user_id=tenant_id,
+        user_id=LOCAL_USER,
     )
 
 
@@ -180,30 +172,22 @@ def build_cluster(
     services: Bookkeeping,
     settings: Settings,
     *,
-    tenant_id: str,
     case_id: str,
     db: BaseDb | None = None,
     members: Sequence[AgentName] = INVESTIGATORS,
 ) -> AgentCluster:
     model = build_model(settings, settings.analysis_model)
     specialists = {
-        member: build_agent(
-            member, model=model, services=services, tenant_id=tenant_id, case_id=case_id, db=db
-        )
+        member: build_agent(member, model=model, services=services, case_id=case_id, db=db)
         for member in members
     }
     writer = build_agent(
-        AgentName.VERDICT_WRITER,
-        model=model,
-        services=services,
-        tenant_id=tenant_id,
-        case_id=case_id,
-        db=db,
+        AgentName.VERDICT_WRITER, model=model, services=services, case_id=case_id, db=db
     )
     return AgentCluster(
         specialists=tuple(specialists.values()),
         writer=writer,
-        investigator=SequentialInvestigator(specialists, user_id=tenant_id),
-        narrator=AgentNarrator(writer, user_id=tenant_id),
+        investigator=SequentialInvestigator(specialists, user_id=LOCAL_USER),
+        narrator=AgentNarrator(writer, user_id=LOCAL_USER),
         model=model,
     )

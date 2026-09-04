@@ -1,4 +1,4 @@
-"""Casos S02: caso, memoria compartida, señales por código, agentes y gateway."""
+"""Casos S02: caso, memoria, señales por código, agentes, CLI y API local."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from argos.agents.cluster import build_cluster
 from argos.agents.tools import dumps, tools_for
 from argos.api.gateway import Gateway, build_app, case_payload
+from argos.cli import parser, render, run_analyze
 from argos.config import WORKLOADS, Settings
 from argos.core.agents import AgentName, Capability, capabilities_of
 from argos.core.analysis import (
@@ -29,7 +30,6 @@ from argos.core.analysis import (
     usable,
 )
 from argos.core.identifiers import extract_identifiers, iban_is_valid, registrable_domain
-from argos.core.identity import Identity, Role
 from argos.core.knowledge import parse_knowledge_bundle, warnings_from_bundle
 from argos.core.model import (
     Analysis,
@@ -41,17 +41,14 @@ from argos.core.model import (
     ReviewState,
     RiskLevel,
     Strength,
-    Tenant,
     Update,
     VerdictOutcome,
     entity_id,
 )
 from argos.core.notices import Notice
-from argos.core.observability import INTERNAL_ERROR, public_code
 from argos.core.policy import AnalysisPolicy, Policy
-from argos.core.ports import ConversationBrief, Investigation, Ledger
+from argos.core.ports import ConversationBrief, Investigation, Investigator, Ledger
 from argos.core.reports import NO_VERDICT_YET, investigation_prompt, parse_investigation
-from argos.core.verdicts import plan_analysis_failure
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.devtools.project_knowledge import read_bundle
 from argos.platform.agno_db import build_agno_db
@@ -64,10 +61,18 @@ from argos.tools.fakes import (
     ScriptedNarrator,
     SequentialIds,
 )
-from argos.usecases.analysis import Analyzed, Skipped, analyze_case, build_brief, grounded
+from argos.usecases.analysis import (
+    BUDGET_EXHAUSTED,
+    Analyzed,
+    Failed,
+    Skipped,
+    analyze_case,
+    build_brief,
+    grounded,
+)
 from argos.usecases.deps import Services
-from argos.usecases.gateway import Analysts, analyze_notice
-from argos.usecases.notices import NoticeOpened, NoticeRefused, open_notice_case
+from argos.usecases.gateway import Analysts, analyze_notice, review_case
+from argos.usecases.notices import NoticeRefused, open_notice_case
 from argos.usecases.queries import CaseView, get_case
 from argos.usecases.signals import OFFICIAL_WARNING, PRIOR_CONFIRMED_CASE
 from argos.usecases.tools import (
@@ -84,11 +89,19 @@ from tests.support import names_in
 
 pytestmark = pytest.mark.anyio
 
-LEDGER_TABLES = {"tenant", "case"}
 MEMORY_TABLES = {"entity", "entity_link", "case_entity", "warning", "signal", "verdict"}
-SHARED_TABLES = {"entity", "entity_link", "warning"}
-RETIRED_TABLES = {"artifact", "document", "job", "attempt", "outbox_entry", "extraction", "chunk"}
-TEST_POLICY = Policy(analysis=AnalysisPolicy(budget=timedelta(seconds=1)))
+CASE_OWNED = {"case_entity", "signal", "verdict"}
+RETIRED_TABLES = {
+    "tenant",
+    "artifact",
+    "document",
+    "job",
+    "attempt",
+    "outbox_entry",
+    "extraction",
+    "chunk",
+}
+TEST_POLICY = Policy(analysis=AnalysisPolicy(budget=timedelta(seconds=5)))
 DEMO_DOMAIN = "example-broker.test"
 
 
@@ -110,26 +123,6 @@ async def ledger(
         yield surreal
     finally:
         await surreal.close()
-
-
-@pytest.fixture
-async def tenant(ledger: Ledger) -> AsyncIterator[Tenant]:
-    record = Tenant(id=f"t-{uuid4().hex[:12]}", name="tenant de prueba", active=True, revision=0)
-    await ledger.commit([Insert(record)])
-    try:
-        yield record
-    finally:
-        await ledger.delete_tenant_data(record.id)
-
-
-@pytest.fixture
-async def stranger(ledger: Ledger) -> AsyncIterator[Tenant]:
-    record = Tenant(id=f"t-{uuid4().hex[:12]}", name="tenant ajeno", active=True, revision=0)
-    await ledger.commit([Insert(record)])
-    try:
-        yield record
-    finally:
-        await ledger.delete_tenant_data(record.id)
 
 
 @pytest.fixture
@@ -179,20 +172,14 @@ def notice_of(text: str, links: tuple[str, ...] = ()) -> Notice:
     return Notice(text=text, links=links, language_hint="es")
 
 
-async def opened_case(services: Services, tenant: Tenant, notice: Notice) -> Case:
-    opened = await open_notice_case(
-        services, tenant_id=tenant.id, notice=notice, correlation_id="corr-test"
-    )
-    assert isinstance(opened, NoticeOpened)
-    return opened.case
+async def opened_case(services: Services, notice: Notice) -> Case:
+    opened = await open_notice_case(services, notice)
+    assert isinstance(opened, Case)
+    return opened
 
 
-def reviewed(case: Case, review: ReviewState, now: datetime) -> Update:
-    return Update(replace(case, review_state=review, reviewed_at=now, revision=case.revision + 1))
-
-
-def caller_of(agent: AgentName, tenant: Tenant, case_id: str) -> ToolCaller:
-    return ToolCaller(agent=agent, tenant_id=tenant.id, case_id=case_id)
+def caller_of(agent: AgentName, case_id: str) -> ToolCaller:
+    return ToolCaller(agent=agent, case_id=case_id)
 
 
 def analysts(investigation: Investigation, summary: str = "Resumen con indicios.") -> Analysts:
@@ -202,44 +189,31 @@ def analysts(investigation: Investigation, summary: str = "Resumen con indicios.
 EMPTY = Investigation(signals=(), entities=(), missing=())
 
 
-async def test_notice_opens_case_with_its_identifiers(
-    services: Services, tenant: Tenant
-) -> None:
-    """S02.11 el aviso deja caso e identificadores en una transacción, aplica R1 y deduplica por R9."""
+async def test_notice_opens_case_with_its_identifiers(services: Services) -> None:
+    """S02.11 el aviso deja caso e identificadores en una transacción y aplica R1."""
     notice = notice_of(f"Escribe a soporte@{DEMO_DOMAIN} o llama al +34600111222")
-    first = await open_notice_case(
-        services, tenant_id=tenant.id, notice=notice, correlation_id="corr-1"
-    )
-    assert isinstance(first, NoticeOpened)
-    assert first.case.state is CaseState.RECEIVED and not first.reused
-    assert first.case.notice_text == notice.text
+    case = await opened_case(services, notice)
 
-    links = [link.entity_id for link in await services.ledger.entities_of_case(first.case.id)]
+    assert case.state is CaseState.RECEIVED and case.notice_text == notice.text
+    links = [link.entity_id for link in await services.ledger.entities_of_case(case.id)]
     assert entity_id(EntityKind.DOMAIN, DEMO_DOMAIN) in links
     assert entity_id(EntityKind.EMAIL, f"soporte@{DEMO_DOMAIN}") in links
     assert entity_id(EntityKind.PHONE, "+34600111222") in links
 
-    again = await open_notice_case(
-        services, tenant_id=tenant.id, notice=notice, correlation_id="corr-2"
-    )
-    assert isinstance(again, NoticeOpened)
-    assert again.reused and again.case.id == first.case.id
+    again = await opened_case(services, notice)
+    assert again.id != case.id
 
     too_long = await open_notice_case(
-        services,
-        tenant_id=tenant.id,
-        notice=notice_of("x" * (TEST_POLICY.notices.max_text_chars + 1)),
-        correlation_id="corr-3",
+        services, notice_of("x" * (TEST_POLICY.notices.max_text_chars + 1))
     )
-    assert again.case.revision == first.case.revision
     assert too_long == NoticeRefused("notice.text_too_long")
-    assert await open_notice_case(
-        services, tenant_id="fantasma", notice=notice, correlation_id="corr-4"
-    ) == NoticeRefused("tenant.unknown")
+    assert await open_notice_case(services, Notice(text="  ")) == NoticeRefused("notice.empty")
+    await services.ledger.delete_case(case.id)
+    await services.ledger.delete_case(again.id)
 
 
 async def test_schema_is_idempotent(settings: Settings, ledger_schema: None) -> None:
-    """S02.27 el esquema de casos, memoria compartida, señales y veredictos es idempotente."""
+    """S02.27 el esquema de casos, memoria, señales y veredictos es idempotente."""
     await apply_schema(settings)
     await apply_schema(settings)
     http = SurrealHttp(settings.surreal_url)
@@ -249,7 +223,7 @@ async def test_schema_is_idempotent(settings: Settings, ledger_schema: None) -> 
     database = info[-1].result
     assert isinstance(database, dict)
     tables = names_in(database.get("tables"))
-    assert tables >= LEDGER_TABLES | MEMORY_TABLES
+    assert tables >= MEMORY_TABLES | {"case"}
     assert not tables & RETIRED_TABLES
 
     async def fields_of(table: str) -> set[str]:
@@ -263,9 +237,11 @@ async def test_schema_is_idempotent(settings: Settings, ledger_schema: None) -> 
         assert isinstance(definition, dict)
         return names_in(definition.get("fields"))
 
-    for table in sorted(MEMORY_TABLES):
-        assert ("tenant_id" in await fields_of(table)) is (table not in SHARED_TABLES)
-    assert {"review_state", "notice_text", "notice_links"} <= await fields_of("case")
+    for table in sorted(MEMORY_TABLES | {"case"}):
+        assert "tenant_id" not in await fields_of(table)
+        assert ("case_id" in await fields_of(table)) is (table in CASE_OWNED)
+    assert {"review_state", "notice_text", "notice_links", "error"} <= await fields_of("case")
+    assert "expires_at" not in await fields_of("case")
 
     version = await http.sql(
         "SELECT version FROM schema_version:current;",
@@ -321,7 +297,7 @@ def test_signals_without_evidence_do_not_score(clock: FakeClock) -> None:
     assert empty.actions
 
 
-def test_agents_only_declare_read_tools(services: Services, tenant: Tenant) -> None:
+def test_agents_only_declare_read_tools(services: Services) -> None:
     """S02.30 cada agente declara solo sus herramientas y ninguna escribe en el libro."""
     assert set(AgentName) == {
         AgentName.TRIAGE,
@@ -330,7 +306,7 @@ def test_agents_only_declare_read_tools(services: Services, tenant: Tenant) -> N
         AgentName.CONVERSATION,
     }
     for agent in AgentName:
-        bound = tools_for(services, caller_of(agent, tenant, "case-1"))
+        bound = tools_for(services, caller_of(agent, "case-1"))
         assert {tool.capability for tool in bound} == capabilities_of(agent)
     assert set(Capability) == {
         Capability.GET_CASE_CONTEXT,
@@ -339,57 +315,60 @@ def test_agents_only_declare_read_tools(services: Services, tenant: Tenant) -> N
     }
 
 
-async def test_tools_refuse_foreign_agent_tenant_and_case(
-    services: Services, tenant: Tenant, stranger: Tenant
+async def test_tools_refuse_the_agent_without_capability_and_the_unknown_case(
+    services: Services,
 ) -> None:
-    """S02.31 una herramienta rechaza al agente sin capacidad, a otro tenant y a otro caso."""
-    case = await opened_case(services, tenant, notice_of("Un aviso cualquiera"))
+    """S02.31 una herramienta rechaza al agente sin capacidad y al caso inexistente."""
+    case = await opened_case(services, notice_of("Un aviso cualquiera"))
 
-    writer = await get_case_context(services, caller_of(AgentName.VERDICT_WRITER, tenant, case.id))
-    foreign = await get_case_context(
-        services, ToolCaller(agent=AgentName.TRIAGE, tenant_id=stranger.id, case_id=case.id)
-    )
-    unknown = await get_case_context(services, caller_of(AgentName.TRIAGE, tenant, "case:ghost"))
-    allowed = await get_case_context(services, caller_of(AgentName.TRIAGE, tenant, case.id))
+    writer = await get_case_context(services, caller_of(AgentName.VERDICT_WRITER, case.id))
+    unknown = await get_case_context(services, caller_of(AgentName.TRIAGE, "case:ghost"))
+    allowed = await get_case_context(services, caller_of(AgentName.TRIAGE, case.id))
 
     assert writer == ToolDenied(NOT_AUTHORIZED)
-    assert foreign == ToolDenied(CASE_NOT_FOUND)
     assert unknown == ToolDenied(CASE_NOT_FOUND)
     assert isinstance(allowed, CaseContext) and allowed.case_id == case.id
+    await services.ledger.delete_case(case.id)
 
 
-async def test_entity_history_only_returns_aggregates(
-    services: Services, tenant: Tenant, stranger: Tenant
-) -> None:
-    """S02.33 find_entity_history devuelve al otro tenant solo agregados."""
+async def test_entity_history_only_returns_aggregates(services: Services) -> None:
+    """S02.33 find_entity_history devuelve agregados de la memoria, no los casos."""
     domain = f"inversiones-{uuid4().hex[:10]}.test"
-    identifier = entity_id(EntityKind.DOMAIN, domain)
-    now = services.clock.now()
-    confirmed = await opened_case(services, tenant, notice_of(f"Confirmado sobre {domain}"))
-    plain = await opened_case(services, tenant, notice_of(f"Otro aviso sobre {domain}"))
-    await services.ledger.commit([reviewed(confirmed, ReviewState.CONFIRMED, now)])
+    confirmed = await opened_case(services, notice_of(f"Confirmado sobre {domain}"))
+    plain = await opened_case(services, notice_of(f"Otro aviso sobre {domain}"))
+    await services.ledger.commit([reviewed(confirmed, ReviewState.CONFIRMED, services.clock.now())])
 
-    other_case = await opened_case(services, stranger, notice_of("Aviso ajeno"))
     history = await find_entity_history(
         services,
-        ToolCaller(agent=AgentName.CONVERSATION, tenant_id=stranger.id, case_id=other_case.id),
+        caller_of(AgentName.CONVERSATION, plain.id),
         kind=EntityKind.DOMAIN,
         value=f"  {domain.upper()} ",
     )
     assert isinstance(history, EntityHistory)
     assert (history.cases, history.confirmed) == (2, True)
     assert history.first_seen_at is not None and history.last_seen_at is not None
-    assert plain.id != confirmed.id
-    assert identifier == entity_id(EntityKind.DOMAIN, domain)
 
+    unknown = await find_entity_history(
+        services,
+        caller_of(AgentName.CONVERSATION, plain.id),
+        kind=EntityKind.DOMAIN,
+        value="nadie-lo-ha-visto.test",
+    )
+    assert isinstance(unknown, EntityHistory) and unknown.cases == 0
+    await services.ledger.delete_case(confirmed.id)
+    await services.ledger.delete_case(plain.id)
+
+
+def reviewed(case: Case, review: ReviewState, now: datetime) -> Update:
+    return Update(replace(case, review_state=review, reviewed_at=now, revision=case.revision + 1))
 
 
 async def test_analysis_moves_the_case_and_issues_the_verdict(
-    services: Services, tenant: Tenant, clock: FakeClock
+    services: Services, clock: FakeClock
 ) -> None:
     """S02.35 el análisis pasa el caso a analyzing y lo cierra con su veredicto versionado."""
     text = "Rentabilidad garantizada del 40% en nexolabs.test"
-    case = await opened_case(services, tenant, notice_of(text))
+    case = await opened_case(services, notice_of(text))
     investigation = Investigation(
         signals=(
             signal_of(
@@ -409,13 +388,12 @@ async def test_analysis_moves_the_case_and_issues_the_verdict(
     assert analyzed.verdict.version == 1 and analyzed.verdict.level is RiskLevel.MEDIUM
     assert analyzed.verdict.summary == "Resumen con indicios."
     assert len(await services.ledger.signals_of_case(case.id)) == 1
+    await services.ledger.delete_case(case.id)
 
 
-async def test_a_notice_without_analyzable_content_is_insufficient(
-    services: Services, tenant: Tenant
-) -> None:
+async def test_a_notice_without_analyzable_content_is_insufficient(services: Services) -> None:
     """S02.36 un aviso sin entrada analizable termina insufficient y nunca en un nivel."""
-    case = await opened_case(services, tenant, Notice(text="", image=b"\x89PNG\r\n\x1a\n" + b"0"))
+    case = await opened_case(services, Notice(text="", image=b"\x89PNG\r\n\x1a\n" + b"0"))
     investigator, narrator = analysts(EMPTY)
     analyzed = await analyze_case(services, investigator, narrator, case_id=case.id)
 
@@ -424,6 +402,7 @@ async def test_a_notice_without_analyzable_content_is_insufficient(
     assert analyzed.verdict.outcome is VerdictOutcome.INSUFFICIENT
     assert analyzed.verdict.level is RiskLevel.UNDETERMINED
     assert analyzed.verdict.actions
+    await services.ledger.delete_case(case.id)
 
 
 @pytest.fixture
@@ -457,13 +436,9 @@ async def test_real_cluster_analyses_without_leaking_the_notice(
     """S02.37 el clúster real analiza con el modelo mock sin dejar el aviso en la sesión."""
     services = surreal_services
     marker = uuid4().hex
-    tenant = Tenant(id=f"t-{uuid4().hex[:12]}", name="tenant real", active=True, revision=0)
-    await services.ledger.commit([Insert(tenant)])
+    case = await opened_case(services, notice_of(f"aviso sintetico {marker}"))
     try:
-        case = await opened_case(services, tenant, notice_of(f"aviso sintetico {marker}"))
-        cluster = build_cluster(
-            services, settings, tenant_id=tenant.id, case_id=case.id, db=build_agno_db(settings)
-        )
+        cluster = build_cluster(services, settings, case_id=case.id, db=build_agno_db(settings))
         try:
             analyzed = await analyze_case(
                 services, cluster.investigator, cluster.narrator, case_id=case.id
@@ -477,16 +452,9 @@ async def test_real_cluster_analyses_without_leaking_the_notice(
         assert not await services.ledger.signals_of_case(case.id)
         assert all(agent.store_tool_messages is False for agent in cluster.specialists)
         assert marker in investigation_prompt(build_brief(case))
-
-        sessions = await agno_session_dump(settings)
-        assert marker not in sessions
+        assert marker not in await agno_session_dump(settings)
     finally:
-        await services.ledger.delete_tenant_data(tenant.id)
-
-
-CURATOR_TOKEN = "test-curator"
-SERVICE_TOKEN = "test-service"
-OTHER_TOKEN = "test-other"
+        await services.ledger.delete_case(case.id)
 
 
 class ScriptedAdvisor:
@@ -497,18 +465,6 @@ class ScriptedAdvisor:
     async def answer(self, brief: ConversationBrief) -> str:
         self.briefs.append(brief)
         return self._answer
-
-
-def identities_of(tenant: Tenant, stranger: Tenant) -> dict[str, Identity]:
-    return {
-        SERVICE_TOKEN: Identity(name="dev", role=Role.SERVICE, tenant_id=tenant.id),
-        OTHER_TOKEN: Identity(name="ajeno", role=Role.SERVICE, tenant_id=stranger.id),
-        CURATOR_TOKEN: Identity(name="curador", role=Role.CURATOR, tenant_id=None),
-    }
-
-
-def bearer(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -523,20 +479,16 @@ def investigation() -> Investigation:
 
 @pytest.fixture
 def gateway_app(
-    services: Services,
-    tenant: Tenant,
-    stranger: Tenant,
-    advisor: ScriptedAdvisor,
-    investigation: Investigation,
+    services: Services, advisor: ScriptedAdvisor, investigation: Investigation
 ) -> FastAPI:
-    gateway = Gateway(
-        services=services,
-        investigators=lambda tenant_id, case_id: analysts(investigation),
-        advisors=lambda tenant_id, case_id: advisor,
-        identities=identities_of(tenant, stranger),
-        version="test",
+    return build_app(
+        Gateway(
+            services=services,
+            investigators=lambda case_id: analysts(investigation),
+            advisors=lambda case_id: advisor,
+            version="test",
+        )
     )
-    return build_app(gateway)
 
 
 @pytest.fixture
@@ -547,93 +499,63 @@ async def client(anyio_backend: str, gateway_app: FastAPI) -> AsyncIterator[http
         yield running
 
 
-async def test_gateway_derives_the_tenant_from_the_identity(
-    client: httpx.AsyncClient, stranger: Tenant
-) -> None:
-    """S02.38 el gateway deriva el tenant de la identidad y nunca del cuerpo."""
-    body = {"text": "Invierte con Nexolabs y dobla tu dinero", "tenant_id": stranger.id}
-    assert (await client.post("/v1/notices", json=body)).status_code == 401
-    unknown = await client.post("/v1/notices", json=body, headers=bearer("desconocido"))
-    assert unknown.status_code == 401
-
-    accepted = await client.post("/v1/notices", json=body, headers=bearer(SERVICE_TOKEN))
-    assert accepted.status_code == 200
-    case_id = str(accepted.json()["case_id"])
-    mine = await client.get(f"/v1/cases/{case_id}", headers=bearer(SERVICE_TOKEN))
-    theirs = await client.get(f"/v1/cases/{case_id}", headers=bearer(OTHER_TOKEN))
-    assert mine.status_code == 200 and theirs.status_code == 404
-
-    curator = await client.post("/v1/notices", json=body, headers=bearer(CURATOR_TOKEN))
-    assert curator.status_code == 403
-    assert curator.json() == {"error": "identity.not_a_tenant"}
-
-
 async def test_analyze_notice_returns_the_verdict_in_the_same_call(
-    services: Services, tenant: Tenant, clock: FakeClock
+    services: Services, clock: FakeClock
 ) -> None:
-    """S02.40 analyze_notice devuelve el veredicto en la misma llamada, sin trabajo durable."""
+    """S02.40 analyze_notice devuelve el veredicto y su evidencia en la misma llamada."""
     investigation = Investigation(
         signals=(
             signal_of(
-                clock,
-                Analysis.PATTERNS,
-                evidence=evidence_of(clock, quote="dobla tu dinero"),
+                clock, Analysis.PATTERNS, evidence=evidence_of(clock, quote="dobla tu dinero")
             ),
         ),
         entities=(),
         missing=(),
     )
-    analysis = await analyze_notice(
+    view = await analyze_notice(
         services,
-        lambda tenant_id, case_id: analysts(investigation),
-        tenant_id=tenant.id,
-        notice=notice_of("Invierte hoy y dobla tu dinero en una semana"),
-        correlation_id="corr-40",
+        lambda case_id: analysts(investigation),
+        notice_of("Invierte hoy y dobla tu dinero en una semana"),
     )
-    assert not isinstance(analysis, NoticeRefused)
-    assert analysis.state is CaseState.VERDICT_ISSUED
-    assert analysis.verdict is not None and analysis.verdict.version == 1
-    assert not analysis.reused
+    assert isinstance(view, CaseView)
+    assert view.state is CaseState.VERDICT_ISSUED
+    assert view.verdict is not None and view.verdict.version == 1
+    assert [signal.quote for signal in view.signals] == ["dobla tu dinero"]
+    await services.ledger.delete_case(view.id)
 
 
-async def test_api_hides_other_tenants(client: httpx.AsyncClient) -> None:
-    """S02.42 la API no deja ver el caso de otro tenant."""
-    accepted = await client.post(
-        "/v1/notices", json={"text": "Un aviso propio"}, headers=bearer(SERVICE_TOKEN)
-    )
+async def test_the_api_serves_the_case_and_refuses_the_unknown(
+    client: httpx.AsyncClient, services: Services
+) -> None:
+    """S02.42 la API local sirve el caso con su evidencia y responde 404 al inexistente."""
+    accepted = await client.post("/v1/notices", json={"text": "Un aviso propio"})
+    assert accepted.status_code == 200
     case_id = str(accepted.json()["case_id"])
-    case = await client.get(f"/v1/cases/{case_id}", headers=bearer(OTHER_TOKEN))
-    question = await client.post(
-        f"/v1/cases/{case_id}/questions",
-        json={"question": "¿qué sabes?"},
-        headers=bearer(OTHER_TOKEN),
-    )
-    assert [case.status_code, question.status_code] == [404, 404]
-    assert case.json() == {"error": "case.not_found"}
+    assert "signals" in accepted.json()
+
+    served = await client.get(f"/v1/cases/{case_id}")
+    assert served.status_code == 200 and served.json()["case_id"] == case_id
+    missing = await client.get("/v1/cases/no-existe")
+    question = await client.post("/v1/cases/no-existe/questions", json={"question": "¿qué?"})
+    assert [missing.status_code, question.status_code] == [404, 404]
+    assert missing.json() == {"error": "case.not_found"}
+    assert (await client.get("/health")).json()["status"] == "ok"
+    await services.ledger.delete_case(case_id)
 
 
-@pytest.mark.parametrize("investigation", [EMPTY], ids=["sin-informe"])
 async def test_ask_case_answers_without_touching_the_verdict(
-    client: httpx.AsyncClient,
-    services: Services,
-    tenant: Tenant,
-    advisor: ScriptedAdvisor,
-    investigation: Investigation,
+    client: httpx.AsyncClient, services: Services, advisor: ScriptedAdvisor
 ) -> None:
     """S02.43 ask_case responde con la evidencia persistida y no muta el veredicto."""
     accepted = await client.post(
-        "/v1/notices",
-        json={"text": f"Promesa de rentabilidad en {DEMO_DOMAIN}"},
-        headers=bearer(SERVICE_TOKEN),
+        "/v1/notices", json={"text": f"Promesa de rentabilidad en {DEMO_DOMAIN}"}
     )
     case_id = str(accepted.json()["case_id"])
     before = await services.ledger.current_verdict(case_id)
     assert before is not None
 
     answered = await client.post(
-        f"/v1/cases/{case_id}/questions",
-        json={"question": "¿Puedo recuperar el dinero?"},
-        headers=bearer(SERVICE_TOKEN),
+        f"/v1/cases/{case_id}/questions", json={"question": "¿Puedo recuperar el dinero?"}
     )
     assert answered.status_code == 200
     assert answered.json()["answer"] == "El nivel no cambia; revisa las acciones."
@@ -642,22 +564,20 @@ async def test_ask_case_answers_without_touching_the_verdict(
     after = await services.ledger.current_verdict(case_id)
     assert after is not None and after.version == before.version
 
-    pending = await opened_case(services, tenant, notice_of("Aviso todavía sin analizar"))
+    pending = await opened_case(services, notice_of("Aviso todavía sin analizar"))
     unanswered = await client.post(
-        f"/v1/cases/{pending.id}/questions",
-        json={"question": "¿ya está?"},
-        headers=bearer(SERVICE_TOKEN),
+        f"/v1/cases/{pending.id}/questions", json={"question": "¿ya está?"}
     )
     assert unanswered.status_code == 200
     assert unanswered.json()["answer"] == NO_VERDICT_YET
     assert unanswered.json()["verdict"] is None
+    await services.ledger.delete_case(case_id)
+    await services.ledger.delete_case(pending.id)
 
 
-async def test_a_settled_case_is_not_analysed_twice(
-    services: Services, tenant: Tenant
-) -> None:
+async def test_a_settled_case_is_not_analysed_twice(services: Services) -> None:
     """S02.45 un caso ya cerrado no se vuelve a analizar ni duplica su veredicto."""
-    case = await opened_case(services, tenant, notice_of("Aviso con un enlace a banco.test"))
+    case = await opened_case(services, notice_of("Aviso con un enlace a banco.test"))
     investigator, narrator = analysts(EMPTY)
     first = await analyze_case(services, investigator, narrator, case_id=case.id)
     assert isinstance(first, Analyzed)
@@ -666,10 +586,11 @@ async def test_a_settled_case_is_not_analysed_twice(
     assert isinstance(again, Skipped)
     current = await services.ledger.current_verdict(case.id)
     assert current is not None and current.version == 1
+    await services.ledger.delete_case(case.id)
 
 
-async def test_each_workload_has_its_own_identity(settings: Settings, ledger_schema: None) -> None:
-    """S02.47 el gateway tiene su identidad y la de los agentes es de solo lectura."""
+async def test_the_agent_user_can_only_read(settings: Settings, ledger_schema: None) -> None:
+    """S02.47 el proceso entra con su identidad y la de los agentes es de solo lectura."""
     await apply_schema(settings)
     await apply_schema(settings)
     http = SurrealHttp(settings.surreal_url)
@@ -712,14 +633,14 @@ async def test_each_workload_has_its_own_identity(settings: Settings, ledger_sch
     assert readable[-1].result
     intruder = f"intruso{uuid4().hex[:8]}"
     await http.sql(
-        f"CREATE tenant:{intruder} SET name = 'x', active = true, revision = 0;",
+        f"CREATE case:{intruder} SET state = 'received', revision = 0;",
         auth=agent_auth,
         ns=settings.ops_namespace,
         db=settings.ops_database,
         raise_on_error=False,
     )
     written = await http.sql(
-        f"SELECT * FROM tenant:{intruder};",
+        f"SELECT * FROM case:{intruder};",
         auth=settings.root_auth,
         ns=settings.ops_namespace,
         db=settings.ops_database,
@@ -736,39 +657,63 @@ async def test_each_workload_has_its_own_identity(settings: Settings, ledger_sch
     assert "Not enough permissions" in str(escalation[-1].result)
 
 
-async def test_public_errors_do_not_leak_internals(services: Services, tenant: Tenant) -> None:
-    """S02.51 el error público no filtra claves, SQL ni texto del aviso."""
-    case = await opened_case(services, tenant, notice_of("promesa de rentabilidad garantizada"))
-    leaked = (
-        "SELECT * FROM case WHERE notice_text = 'promesa de rentabilidad garantizada' "
-        "-- password=hunter2"
-    )
-    await services.ledger.commit(
-        plan_analysis_failure(case=case, code=leaked, now=services.clock.now())
-    )
+class BrokenInvestigator:
+    async def investigate(self, brief: object) -> Investigation:
+        raise RuntimeError("el modelo no responde")
 
+
+async def test_a_failed_analysis_leaves_the_case_operable(
+    client: httpx.AsyncClient, services: Services
+) -> None:
+    """S02.51 un análisis que falla deja el caso failed con su error y lo dice al llamante."""
+    case = await opened_case(services, notice_of("promesa de rentabilidad garantizada"))
+    broken: Investigator = BrokenInvestigator()
+    outcome = await analyze_case(services, broken, ScriptedNarrator(), case_id=case.id)
+
+    assert isinstance(outcome, Failed)
+    assert "el modelo no responde" in outcome.error
     stored = await services.ledger.case(case.id)
-    assert stored is not None and stored.public_error == leaked
-    view = await get_case(services, tenant_id=tenant.id, case_id=case.id)
+    assert stored is not None and stored.state is CaseState.FAILED
+    assert stored.error is not None and "RuntimeError" in stored.error
+
+    view = await get_case(services, case.id)
     assert isinstance(view, CaseView)
     rendered = dumps(case_payload(view))
-    assert "SELECT" not in rendered and "hunter2" not in rendered
-    assert "rentabilidad" not in rendered
-    assert INTERNAL_ERROR in rendered
-    assert public_code("notice.empty") == "notice.empty"
+    assert "el modelo no responde" in rendered
 
+    refused = await client.post("/v1/notices", json={"text": "x" * 20_001})
+    assert refused.status_code == 422 and refused.json() == {"error": "notice.text_too_long"}
+    await services.ledger.delete_case(case.id)
+
+
+async def test_an_analysis_that_exhausts_its_budget_fails(services: Services) -> None:
+    """S02.62 un análisis que agota el presupuesto de R15 termina failed, no colgado."""
+
+    class SlowInvestigator:
+        async def investigate(self, brief: object) -> Investigation:
+            import asyncio
+
+            await asyncio.sleep(3)
+            return EMPTY
+
+    impatient = replace(services, policy=Policy(analysis=AnalysisPolicy(budget=timedelta(seconds=0.1))))
+    case = await opened_case(impatient, notice_of("Un aviso que tarda demasiado"))
+    slow: Investigator = SlowInvestigator()
+    outcome = await analyze_case(impatient, slow, ScriptedNarrator(), case_id=case.id)
+
+    assert isinstance(outcome, Failed) and outcome.error == BUDGET_EXHAUSTED
+    stored = await impatient.ledger.case(case.id)
+    assert stored is not None and stored.state is CaseState.FAILED
+    await impatient.ledger.delete_case(case.id)
 
 
 async def test_demo_warnings_are_queryable(settings: Settings) -> None:
-    """S02.54 el catálogo sintético demuestra la consulta de advertencias oficiales."""
+    """S02.54 el catálogo sintético demuestra la consulta de registros."""
     ledger = InMemoryLedger()
     bundle = parse_knowledge_bundle(read_bundle(settings.knowledge_graph_path))
-    warnings = warnings_from_bundle(bundle)
-    await ledger.commit([Insert(warning) for warning in warnings])
-    services = Services(
-        ledger=ledger, clock=FakeClock(), ids=SequentialIds(), policy=TEST_POLICY
-    )
-    caller = ToolCaller(agent=AgentName.TRIAGE, tenant_id="tenant-demo", case_id="case-demo")
+    await ledger.commit([Insert(warning) for warning in warnings_from_bundle(bundle)])
+    services = Services(ledger=ledger, clock=FakeClock(), ids=SequentialIds(), policy=TEST_POLICY)
+    caller = caller_of(AgentName.TRIAGE, "case-demo")
 
     matches = await find_registry_matches(
         services, caller, kind=EntityKind.DOMAIN, value=DEMO_DOMAIN
@@ -816,7 +761,6 @@ def test_services_profile_bootstraps_and_runs_argos(settings: Settings) -> None:
     devcontainer = json.loads(Path(".devcontainer/devcontainer.json").read_text(encoding="utf-8"))
     assert set(devcontainer["runServices"]) == {"app", "surrealdb-test"}
     assert "postCreateCommand" not in devcontainer
-    assert "postStartCommand" not in devcontainer
     assert settings.surreal_url == "http://surrealdb-test:8000"
 
 
@@ -844,9 +788,7 @@ def test_identifiers_are_extracted_by_code() -> None:
     ]
 
 
-async def test_only_code_marks_official_warnings_and_recidivism(
-    services: Services, tenant: Tenant, stranger: Tenant, clock: FakeClock
-) -> None:
+async def test_only_code_marks_official_warnings(services: Services, clock: FakeClock) -> None:
     """S02.57 la advertencia oficial y la reincidencia solo las marca el código."""
     reported = parse_investigation(
         json.dumps(
@@ -887,7 +829,7 @@ async def test_only_code_marks_official_warnings_and_recidivism(
             )
         ]
     )
-    case = await opened_case(services, tenant, notice_of(f"Opera con {advertised} sin riesgo"))
+    case = await opened_case(services, notice_of(f"Opera con {advertised} sin riesgo"))
     investigator, narrator = analysts(EMPTY)
     analyzed = await analyze_case(services, investigator, narrator, case_id=case.id)
 
@@ -895,7 +837,7 @@ async def test_only_code_marks_official_warnings_and_recidivism(
     assert analyzed.verdict.level is RiskLevel.CRITICAL
     stored = await services.ledger.signals_of_case(case.id)
     assert [(signal.code, signal.official) for signal in stored] == [(OFFICIAL_WARNING, True)]
-    assert PRIOR_CONFIRMED_CASE not in {signal.code for signal in stored}
+    await services.ledger.delete_case(case.id)
 
 
 def test_a_quote_that_is_not_in_the_notice_supports_nothing(clock: FakeClock) -> None:
@@ -906,3 +848,90 @@ def test_a_quote_that_is_not_in_the_notice_supports_nothing(clock: FakeClock) ->
 
     assert grounded((real, invented), text) == (real,)
     assert grounded((invented,), text) == ()
+
+
+async def test_the_cli_analyses_and_prints_the_verdict(
+    services: Services, clock: FakeClock, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S02.59 la CLI analiza un aviso y escribe el veredicto con su evidencia."""
+    options = parser().parse_args(["analyze", "Invierte y dobla tu dinero", "--link", "https://x.test"])
+    assert (options.text, options.link) == ("Invierte y dobla tu dinero", ["https://x.test"])
+
+    investigation = Investigation(
+        signals=(
+            signal_of(
+                clock, Analysis.PATTERNS, evidence=evidence_of(clock, quote="dobla tu dinero")
+            ),
+        ),
+        entities=(),
+        missing=(),
+    )
+
+    class Wired:
+        def __init__(self) -> None:
+            self.services = services
+
+        def investigators(self, case_id: str) -> Analysts:
+            return analysts(investigation)
+
+    code = await run_analyze(Wired(), "Invierte y dobla tu dinero", [])  # type: ignore[arg-type]
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "MEDIO" in printed and "dobla tu dinero" in printed
+    assert "Qué hacer:" in printed
+
+
+async def test_confirming_a_case_makes_the_recidivism_visible(services: Services) -> None:
+    """S02.60 marcar un caso confirmado hace visible la reincidencia en el siguiente."""
+    domain = f"reincidente-{uuid4().hex[:10]}.test"
+    first = await opened_case(services, notice_of(f"Aviso sobre {domain}"))
+    investigator, narrator = analysts(EMPTY)
+    await analyze_case(services, investigator, narrator, case_id=first.id)
+
+    marked = await review_case(services, case_id=first.id, review=ReviewState.CONFIRMED)
+    assert marked is not None and marked.review_state is ReviewState.CONFIRMED
+
+    second = await opened_case(services, notice_of(f"Otra vez {domain}"))
+    analyzed = await analyze_case(services, investigator, narrator, case_id=second.id)
+    assert isinstance(analyzed, Analyzed)
+    assert analyzed.verdict.level is RiskLevel.CRITICAL
+    codes = [signal.code for signal in await services.ledger.signals_of_case(second.id)]
+    assert codes == [PRIOR_CONFIRMED_CASE]
+    await services.ledger.delete_case(first.id)
+    await services.ledger.delete_case(second.id)
+
+
+def test_the_case_renders_with_its_evidence(clock: FakeClock) -> None:
+    """S02.61 la salida de la CLI enseña el nivel, la evidencia y qué hacer."""
+    from argos.usecases.queries import SignalView, VerdictSummary
+
+    view = CaseView(
+        id="c1",
+        state=CaseState.VERDICT_ISSUED,
+        review_state=ReviewState.UNREVIEWED,
+        error=None,
+        verdict=VerdictSummary(
+            version=1,
+            level=RiskLevel.CRITICAL,
+            outcome=VerdictOutcome.ISSUED,
+            summary="Coincide con una advertencia vigente.",
+            actions=("No envíes dinero.",),
+            missing=(),
+        ),
+        signals=(
+            SignalView(
+                analysis=Analysis.REGISTRIES,
+                code=OFFICIAL_WARNING,
+                strength=Strength.STRONG,
+                official=True,
+                recidivism=False,
+                source="https://warnings.fca.example/demo",
+                quote="La FCA mantiene una advertencia vigente.",
+            ),
+        ),
+    )
+    printed = render(view)
+    assert "CRÍTICO" in printed
+    assert "·oficial" in printed
+    assert "https://warnings.fca.example/demo" in printed
+    assert "No envíes dinero." in printed

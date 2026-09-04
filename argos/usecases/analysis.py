@@ -3,6 +3,7 @@ durable. Las transiciones y el nivel son código, nunca un prompt."""
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from argos.core.analysis import DraftSignal, assess, usable, verdict_language
@@ -10,13 +11,7 @@ from argos.core.identifiers import extract_identifiers
 from argos.core.ledger import Obsolete
 from argos.core.model import Case, Verdict
 from argos.core.notices import normalize_text
-from argos.core.ports import (
-    CaseBrief,
-    Investigator,
-    LedgerConflictError,
-    Narrator,
-    VerdictBrief,
-)
+from argos.core.ports import CaseBrief, Investigator, LedgerConflictError, Narrator, VerdictBrief
 from argos.core.reports import quote_is_literal
 from argos.core.verdicts import (
     VerdictDraft,
@@ -28,7 +23,7 @@ from argos.usecases.deps import Bookkeeping
 from argos.usecases.notices import known_entities
 from argos.usecases.signals import official_signals, recidivism_signals
 
-INVESTIGATION_FAILED = "case.analysis_failed"
+BUDGET_EXHAUSTED = "el análisis agotó su presupuesto de tiempo"
 
 
 @dataclass(frozen=True)
@@ -42,12 +37,16 @@ class Skipped:
     reason: str
 
 
+@dataclass(frozen=True)
+class Failed:
+    case: Case
+    error: str
+
+
 def build_brief(case: Case) -> CaseBrief:
     return CaseBrief(
-        tenant_id=case.tenant_id,
         case_id=case.id,
         language=verdict_language(case.language),
-        correlation_id=case.correlation_id,
         text=case.notice_text,
         links=case.notice_links,
         entities=extract_identifiers(case.notice_text, case.notice_links),
@@ -61,7 +60,8 @@ def grounded(signals: tuple[DraftSignal, ...], text: str) -> tuple[DraftSignal, 
 
 async def analyze_case(
     services: Bookkeeping, investigator: Investigator, narrator: Narrator, *, case_id: str
-) -> Analyzed | Skipped:
+) -> Analyzed | Skipped | Failed:
+    """Un fallo deja el caso `failed` con su error, nunca colgado en `analyzing`."""
     ledger = services.ledger
     case = await ledger.case(case_id)
     if case is None:
@@ -74,14 +74,18 @@ async def analyze_case(
     except LedgerConflictError:
         return Skipped("case changed underneath")
     try:
-        return await _analyze(services, investigator, narrator, case=started.case)
-    except Exception:
-        await ledger.commit(
-            plan_analysis_failure(
-                case=started.case, code=INVESTIGATION_FAILED, now=services.clock.now()
-            )
-        )
-        raise
+        async with asyncio.timeout(services.policy.analysis.budget.total_seconds()):
+            return await _analyze(services, investigator, narrator, case=started.case)
+    except TimeoutError:
+        return await _fail(services, started.case, BUDGET_EXHAUSTED)
+    except Exception as error:
+        return await _fail(services, started.case, f"{type(error).__name__}: {error}")
+
+
+async def _fail(services: Bookkeeping, case: Case, error: str) -> Failed:
+    ops = plan_analysis_failure(case=case, error=error, now=services.clock.now())
+    await services.ledger.commit(ops)
+    return Failed(case=case, error=error)
 
 
 async def _analyze(

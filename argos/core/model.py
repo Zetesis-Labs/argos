@@ -1,4 +1,4 @@
-"""Registros del libro operacional de argos/ops (S02 §6)."""
+"""Registros del libro operacional de argos/ops."""
 
 from __future__ import annotations
 
@@ -71,40 +71,24 @@ class VerdictState(StrEnum):
 
 
 @dataclass(frozen=True)
-class Tenant:
-    id: str
-    name: str
-    active: bool
-    revision: int
-
-
-@dataclass(frozen=True)
 class Case:
     """El aviso vive en su caso: sin su texto no hay nada que analizar (R1, R8)."""
 
     id: str
-    tenant_id: str
     state: CaseState
-    notice_hash: str | None
     notice_text: str
     notice_links: tuple[str, ...]
     language: str | None
-    correlation_id: str
-    previous_case_id: str | None
     review_state: ReviewState
     reviewed_at: datetime | None
-    reviewed_by: str | None
-    public_error: str | None
+    error: str | None
     created_at: datetime
     updated_at: datetime
-    expires_at: datetime
     revision: int
 
 
 @dataclass(frozen=True)
 class Entity:
-    """Memoria compartida entre tenants (constitución §6): no lleva tenant."""
-
     id: str
     kind: EntityKind
     value: str
@@ -127,7 +111,6 @@ class EntityLink:
 @dataclass(frozen=True)
 class CaseEntity:
     id: str
-    tenant_id: str
     case_id: str
     entity_id: str
     created_at: datetime
@@ -149,7 +132,6 @@ class OfficialWarning:
 @dataclass(frozen=True)
 class Signal:
     id: str
-    tenant_id: str
     case_id: str
     analysis: Analysis
     code: str
@@ -167,7 +149,6 @@ class Signal:
 @dataclass(frozen=True)
 class Verdict:
     id: str
-    tenant_id: str
     case_id: str
     version: int
     level: RiskLevel
@@ -181,12 +162,9 @@ class Verdict:
     revision: int
 
 
-LedgerRecord = (
-    Tenant | Case | Entity | EntityLink | CaseEntity | OfficialWarning | Signal | Verdict
-)
+LedgerRecord = Case | Entity | EntityLink | CaseEntity | OfficialWarning | Signal | Verdict
 
 TABLE_NAMES: dict[type[LedgerRecord], str] = {
-    Tenant: "tenant",
     Case: "case",
     Entity: "entity",
     EntityLink: "entity_link",
@@ -215,8 +193,6 @@ class Update:
 
 @dataclass(frozen=True)
 class Delete:
-    """Solo para lo que guarda contenido: el resto caduca en su sitio como evidencia."""
-
     record: LedgerRecord
 
 

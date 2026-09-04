@@ -71,7 +71,7 @@ async def official_signals(
 async def recidivism_signals(
     services: Bookkeeping, entities: Sequence[DraftEntity], *, case_id: str
 ) -> tuple[DraftSignal, ...]:
-    """Solo agregados: el tenant nunca ve el caso ajeno que sostiene la reincidencia."""
+    """Solo cuenta un caso anterior que tú marcaste como confirmado (R13)."""
     signals: list[DraftSignal] = []
     for entity in entities:
         if not _decisive(entity):
@@ -89,7 +89,6 @@ async def recidivism_signals(
             appearances.append(
                 CaseAppearance(
                     case_id=previous.id,
-                    tenant_id=previous.tenant_id,
                     review_state=previous.review_state,
                     seen_at=previous.created_at,
                 )

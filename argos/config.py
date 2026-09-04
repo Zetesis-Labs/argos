@@ -82,12 +82,6 @@ class Settings:
     gateway_public_url: str = field(
         default_factory=lambda: environment("GATEWAY_PUBLIC_URL", "http://localhost:7777")
     )
-    gateway_identities: str = field(
-        default_factory=lambda: environment(
-            "GATEWAY_IDENTITIES",
-            "dev-service-token=dev:tenant-dev,dev-curator-token=curator:curator",
-        )
-    )
 
     def workload(self, name: str) -> WorkloadCredentials:
         if name not in WORKLOADS:

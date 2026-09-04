@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
 from typing import cast
 
 from surrealdb import AsyncSurreal
@@ -21,7 +20,6 @@ from argos.core.model import (
     LedgerRecord,
     OfficialWarning,
     Signal,
-    Tenant,
     Verdict,
     VerdictState,
     table_name,
@@ -34,12 +32,11 @@ Params = dict[str, Value]
 CONFLICT_MARKERS = ("conflict", "already contains", "already exists")
 SKIPPED_MARKERS = ("not executed", "cancelled transaction", "Cannot COMMIT")
 
-DELETE_TENANT_STATEMENTS = (
-    "DELETE FROM case WHERE tenant_id = $tenant;",
-    "DELETE FROM case_entity WHERE tenant_id = $tenant;",
-    "DELETE FROM signal WHERE tenant_id = $tenant;",
-    "DELETE FROM verdict WHERE tenant_id = $tenant;",
-    "DELETE type::record('tenant', $tenant);",
+DELETE_CASE_STATEMENTS = (
+    "DELETE FROM case_entity WHERE case_id = $case;",
+    "DELETE FROM signal WHERE case_id = $case;",
+    "DELETE FROM verdict WHERE case_id = $case;",
+    "DELETE type::record('case', $case);",
 )
 
 
@@ -153,22 +150,8 @@ class SurrealLedger:
     async def _many[R: LedgerRecord](self, cls: type[R], sql: str, params: Row) -> list[R]:
         return [from_row(cls, row) for row in await self._query(sql, params)]
 
-    async def tenant(self, tenant_id: str) -> Tenant | None:
-        return await self._one(Tenant, "tenant", tenant_id)
-
     async def case(self, case_id: str) -> Case | None:
         return await self._one(Case, "case", case_id)
-
-    async def case_by_notice(
-        self, tenant_id: str, notice_hash: str, *, since: datetime
-    ) -> Case | None:
-        cases = await self._many(
-            Case,
-            "SELECT * FROM case WHERE tenant_id = $tenant AND notice_hash = $hash "
-            "AND created_at >= $since ORDER BY created_at DESC LIMIT 1;",
-            {"tenant": tenant_id, "hash": notice_hash, "since": since},
-        )
-        return cases[0] if cases else None
 
     async def entity_by_value(self, kind: EntityKind, value: str) -> Entity | None:
         entities = await self._many(
@@ -219,8 +202,8 @@ class SurrealLedger:
         )
         return verdicts[0] if verdicts else None
 
-    async def delete_tenant_data(self, tenant_id: str) -> None:
-        await self._query("\n".join(DELETE_TENANT_STATEMENTS), {"tenant": tenant_id})
+    async def delete_case(self, case_id: str) -> None:
+        await self._query("\n".join(DELETE_CASE_STATEMENTS), {"case": case_id})
 
 
 def ledger_for(settings: Settings, workload: str) -> SurrealLedger:

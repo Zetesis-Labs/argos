@@ -81,14 +81,13 @@ class DraftEntity:
 @dataclass(frozen=True)
 class CaseAppearance:
     case_id: str
-    tenant_id: str
     review_state: ReviewState
     seen_at: datetime
 
 
 @dataclass(frozen=True)
 class EntityHistory:
-    """R29: lo único que un tenant recibe de la memoria compartida."""
+    """Lo que la memoria sabe de un identificador entre casos (R29)."""
 
     kind: EntityKind
     value: str
