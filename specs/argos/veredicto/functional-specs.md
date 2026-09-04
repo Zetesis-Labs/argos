@@ -4,7 +4,7 @@
 
 Los flujos llevan identificador `W1`…`W5` y las reglas `R1`…`R29`. Las specs
 técnicas `Sxx` los citan. Esta especificación describe el comportamiento; la
-topología de AgentOS, NATS, RustFS y SurrealDB se fija en la vertical técnica.
+topología concreta se fija en la vertical técnica.
 
 ## 1. Resumen
 
@@ -31,7 +31,7 @@ la interpretación jurídica de contratos.
 | Actor | Quién es | Qué puede hacer |
 |---|---|---|
 | **Consultante** | Persona con un aviso sospechoso. Anónima para Argos y representada por un cliente autorizado. | Enviar un aviso o documento, leer el veredicto y preguntar sobre él |
-| **Cliente de servicio** | Aplicación o AgentOS remoto con identidad de servicio y tenant asignado. | Invocar capacidades públicas, consultar sus casos y trabajos, recibir referencias de resultados |
+| **Cliente de servicio** | Aplicación o agente remoto con identidad de servicio y tenant asignado. | Invocar capacidades públicas, consultar sus casos y trabajos, recibir referencias de resultados |
 | **Curador** | Quien opera el despliegue de Argos, con visión de todos los tenants. Autenticado y auditado. | Revisar casos, reintentar trabajos, marcar confirmados y falsos positivos, supervisar ingestas y explorar la memoria |
 | **Workflow de veredicto** | Coordinador del caso. | Validar el proceso, llamar a especialistas, esperar trabajos, puntuar y cerrar el caso |
 | **Agentes especialistas** | Triaje, registros, dominio, patrones, memoria, documentos, redacción y conversación. | Ejecutar únicamente su cometido con herramientas y permisos acotados |
@@ -72,7 +72,7 @@ la interpretación jurídica de contratos.
 - Saber si las fuentes están al día y actuar cuando una ingesta falla.
 - Explorar qué entidades se repiten y qué vínculos hay entre casos.
 
-**Trabajos de un AgentOS remoto**
+**Trabajos de un servicio remoto**
 
 - Delegar una capacidad completa de Argos sin conocer sus agentes internos.
 - Recibir identificadores estables y consultar el resultado de forma autorizada.
@@ -464,8 +464,11 @@ aceptado → en cola → procesando → extracción disponible → analizando �
 - **A10** · La memoria de entidades es compartida entre tenants y se expone a
   cada tenant solo como agregados (R29). Decidido el 2026-09-03.
 - **A11** · El curador es global al despliegue, no por tenant (R16).
-- **A12** · Todo análisis de caso es un trabajo durable, también el de un
-  aviso breve; la llamada síncrona espera su resultado (R12, R25).
+- **A12** · El análisis de un aviso breve ocurre dentro de la llamada que lo
+  pide: cabe en el presupuesto de R15 y no necesita ser un trabajo durable. Lo
+  será cuando la entrada deje de caber, empezando por los documentos (R12, R25).
+- **A14** · El aviso se conserva en su caso mientras dure la retención. Sin su
+  texto no se puede analizar, explicar ni reproducir un veredicto (R1, R8).
 - **A13** · `undetermined` existe para no fingir un nivel cuando un parcial no
   reunió ninguna señal (R4, R5).
 

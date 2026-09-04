@@ -1,7 +1,22 @@
-# S02 · AgentOS, clúster de agentes y workers
+# S02 (aparcada) · AgentOS, clúster de agentes y workers
 
-**Estado**: implementada. Los ocho pasos del §14 tienen código y casos anclados
-en el §16. Lo que S02 deja fuera a propósito está en el §1 y en las notas de
+**Estado: APARCADA el 2026-09-04.** Este documento describe la vertical
+asíncrona completa —AgentOS, A2A, libro de trabajos, outbox, NATS JetStream,
+RustFS, worker de PDF, dispatcher, resumer, analizador y janitor— que se
+implementó, se verificó y después se retiró por desproporcionada para una
+prueba de concepto. El código vive en el tag `s02-async`; la spec vigente es
+`specs/S02-nucleo-y-agentes.md`.
+
+Se conserva porque las decisiones siguen siendo válidas para cuando Argos
+necesite trabajo durable y documentos: los invariantes de la constitución §9 y
+§10 apuntan aquí. Sus casos `S02.n` **no** están anclados: `spec-check` no
+recorre `specs/parked/`, y los números que sobreviven se reutilizan con el mismo
+significado en la spec vigente.
+
+Lo que sigue es el texto original, sin cambios.
+
+**Estado original**: implementada. Los ocho pasos del §14 tienen código y casos
+anclados en el §16. Lo que S02 deja fuera a propósito está en el §1 y en las notas de
 alcance de cada sección: fuentes oficiales (W3), revisión del curador (W4),
 cálculo de riesgo con señales reales y mínimo privilegio por tabla en
 SurrealDB.

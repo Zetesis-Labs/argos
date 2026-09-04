@@ -1,9 +1,8 @@
 # S01 · Plataforma
 
 Esta vertical verifica la base disponible hoy en el devcontenedor: SurrealDB 3
-con su MCP embebido, LiteLLM, Langfuse y el contenedor de la app. Cubre la
-constitución §2, §7, §11 y §12. El puerto de AgentOS está reservado, pero el
-servidor, el clúster de agentes, NATS y RustFS pertenecen a S02 y no se presentan
+con su MCP embebido, LiteLLM y el contenedor de la app. Cubre la constitución
+§2, §7, §11 y §12. El gateway y los agentes pertenecen a S02 y no se presentan
 como implementados por S01.
 
 Hechos verificados en SurrealDB 3.2.4 que fijan estos casos: el endpoint `/mcp`
@@ -12,9 +11,8 @@ entra con `Authorization: Bearer` y un JWT de `/signin` (Basic solo vale para
 root); una petición cuyo `Host` no está en `SURREAL_MCP_ALLOWED_HOSTS` recibe
 403.
 
-La arquitectura aprobada que se construye sobre esta base está en
-[`S02-agentos-workers.md`](S02-agentos-workers.md). S02 no se considera
-implementada hasta que sus casos de aceptación tengan test y código.
+Lo que se construye sobre esta base está en
+[`S02-nucleo-y-agentes.md`](S02-nucleo-y-agentes.md).
 
 ## S01.1 El esquema se aplica de forma idempotente
 
@@ -63,19 +61,11 @@ implementada hasta que sus casos de aceptación tengan test y código.
 - Entonces responde el texto del mock y la cabecera `x-litellm-response-cost`
   es mayor que cero
 
-## S01.7 Un agente mínimo deja traza en Langfuse
+## Casos retirados
 
-- Dado un agente de Agno con el modelo `mock` a través de LiteLLM y la
-  instrumentación activa
-- Cuando se ejecuta una vez dentro de una traza raíz con un identificador de
-  usuario único
-- Entonces Langfuse devuelve, en menos de 60 segundos, al menos una observación
-  de esa traza, al menos una lleva ese identificador de usuario y ninguna lleva
-  uno distinto
-
-Langfuse v4 arranca en modo `events_only`: el endpoint `/api/public/traces` no
-existe (404) y la lectura se hace por `/api/public/v2/observations` filtrando
-por `traceId`.
+**S01.7 · Un agente mínimo deja traza en Langfuse.** Retirado el 2026-09-04
+junto con Langfuse: Argos no despliega hoy backend de trazas (constitución §11).
+El caso vuelve, con este mismo número, cuando haya uno que verificar.
 
 ## S01.8 Agno persiste sus sesiones en agno/sessions y nada en argos/ops
 

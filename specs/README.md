@@ -36,27 +36,35 @@ el código.
 |---|---|---|---|
 | [funcional](argos/veredicto/functional-specs.md) | Veredicto de avisos y documentos (iniciativa v1) | todas | W1–W5, R1–R29 |
 | [conocimiento](argos/conocimiento/functional-specs.md) | Catálogo curado, exploración y proyección local | todas | W1–W4, R1–R14 |
-| [S01](S01-plataforma.md) | Base verificada: SurrealDB/MCP, LiteLLM y Langfuse | 0 | constitución §2, §7, §11–§12 |
-| [S02](S02-agentos-workers.md) | AgentOS, A2A, NATS, RustFS y worker de documentos | 1 | W1, W2, W5; R1, R8, R9, R12, R15–R29; constitución §3–§12 |
+| [S01](S01-plataforma.md) | Base verificada: SurrealDB/MCP y LiteLLM | 0 | constitución §2, §7, §11–§12 |
+| [S02](S02-nucleo-y-agentes.md) | Caso, identificadores, señales por código, agentes y gateway | 1 | W1, W2; R1–R9, R15, R16, R28, R29; constitución §3–§8, §11–§12 |
 | [S03](S03-conocimiento-okf.md) | Fundación OKF en Git, explorador y proyección SurrealDB | 2 | conocimiento W1–W3, R1–R12 y R14 |
 
-S01 y S02 están implementadas y verificadas. S02 tiene 55 casos anclados; los
-últimos cargan advertencias exclusivamente sintéticas para demostrar la consulta
-de registros sin adelantar la ingesta real de S07 y arrancan todos los procesos
-desde el perfil local `services`.
+S01, S02 y S03 están implementadas y verificadas.
 
-S03 está en implementación y sustituye el fixture usado por S02.54 como fuente
-de arranque por un corpus OKF sintético y versionado.
+## La vertical asíncrona, aparcada
+
+`specs/parked/S02-pipeline-asincrono.md` es la S02 original: AgentOS, A2A, libro
+de trabajos, outbox, NATS JetStream, RustFS, worker de PDF y sus cuatro procesos
+auxiliares. Se implementó entera, se verificó con 55 casos y se retiró el
+2026-09-04 por desproporcionada para una prueba de concepto que todavía no tiene
+un solo veredicto medido contra datos reales. El código está en el tag
+`s02-async`.
+
+`spec-check` no recorre `specs/parked/`. Los casos que sobrevivieron al recorte
+conservan su número y su significado en la S02 vigente; el resto queda como
+diseño, no como compromiso.
 
 Fases previstas (una spec técnica por vertical, se crean al empezar la fase):
 
 | Fase | Vertical | Spec prevista |
 |---|---|---|
-| 1 | AgentOS y clúster de agentes: A2A, NATS, RustFS y worker de documentos | S02 (implementada) |
-| 2 | Fundación de conocimiento y URL a veredicto | S03 conocimiento, S04 identificadores, S05 dominio, S06 puntuación, S07 veredicto |
+| 1 | Caso, identificadores, señales por código y agentes | S02 (implementada) |
+| 2 | Fundación de conocimiento y URL a veredicto | S03 conocimiento, S05 dominio, S06 puntuación, S07 veredicto |
 | 3 | Registros oficiales: ingesta CNMV e I-SCAN, consulta FCA, cadena de clones | S08 fuentes |
 | 4 | Memoria y revisión: grafo compartido de entidades, vínculos `same_actor`, casos previos, revisión del curador (W4, R10, R13, R29) y exploración de la memoria | S09 memoria y revisión |
 | 5 | Captura de pantalla y canal Telegram | S10 multimodal, S11 canales |
+| — | Documentos PDF y trabajo durable, cuando una entrada deje de caber en la llamada | recuperar `specs/parked/S02-pipeline-asincrono.md` |
 
 ## Decisiones de dirección
 
@@ -65,3 +73,5 @@ Fases previstas (una spec técnica por vertical, se crean al empezar la fase):
   agentes lo consulten localmente.
 - Un dashboard local del devcontainer podrá facilitar operación, curación y
   conversación mediante AG-UI. No tiene todavía fase ni spec técnica asignada.
+- La infraestructura entra cuando hay código que la usa. Se retiró la que solo
+  se sostenía a sí misma; volverá con la entrada que la justifique.
