@@ -1,4 +1,4 @@
-"""Libro de trabajos sobre SurrealDB: transacciones con escrituras condicionales (S02 §6)."""
+"""Libro operacional sobre SurrealDB: transacciones con escrituras condicionales."""
 
 from __future__ import annotations
 
@@ -11,28 +11,15 @@ from surrealdb.types import Value
 
 from argos.config import Settings
 from argos.core.model import (
-    Artifact,
-    ArtifactState,
-    Attempt,
     Case,
     CaseEntity,
-    CaseState,
-    Chunk,
     Delete,
-    Document,
-    DocumentState,
     Entity,
     EntityKind,
-    Extraction,
     Insert,
-    Job,
-    JobCount,
-    JobState,
-    JobType,
     LedgerOp,
     LedgerRecord,
     OfficialWarning,
-    OutboxEntry,
     Signal,
     Tenant,
     Verdict,
@@ -49,13 +36,6 @@ SKIPPED_MARKERS = ("not executed", "cancelled transaction", "Cannot COMMIT")
 
 DELETE_TENANT_STATEMENTS = (
     "DELETE FROM case WHERE tenant_id = $tenant;",
-    "DELETE FROM artifact WHERE tenant_id = $tenant;",
-    "DELETE FROM document WHERE tenant_id = $tenant;",
-    "DELETE FROM job WHERE tenant_id = $tenant;",
-    "DELETE FROM attempt WHERE tenant_id = $tenant;",
-    "DELETE FROM outbox_entry WHERE tenant_id = $tenant;",
-    "DELETE FROM extraction WHERE tenant_id = $tenant;",
-    "DELETE FROM chunk WHERE tenant_id = $tenant;",
     "DELETE FROM case_entity WHERE tenant_id = $tenant;",
     "DELETE FROM signal WHERE tenant_id = $tenant;",
     "DELETE FROM verdict WHERE tenant_id = $tenant;",
@@ -190,90 +170,6 @@ class SurrealLedger:
         )
         return cases[0] if cases else None
 
-    async def artifact(self, artifact_id: str) -> Artifact | None:
-        return await self._one(Artifact, "artifact", artifact_id)
-
-    async def document(self, document_id: str) -> Document | None:
-        return await self._one(Document, "document", document_id)
-
-    async def document_by_hash(self, case_id: str, sha256: str) -> Document | None:
-        documents = await self._many(
-            Document,
-            "SELECT * FROM document WHERE case_id = $case AND sha256 = $hash LIMIT 1;",
-            {"case": case_id, "hash": sha256},
-        )
-        return documents[0] if documents else None
-
-    async def documents_of_case(self, case_id: str) -> list[Document]:
-        return await self._many(
-            Document,
-            "SELECT * FROM document WHERE case_id = $case ORDER BY created_at;",
-            {"case": case_id},
-        )
-
-    async def job(self, job_id: str) -> Job | None:
-        return await self._one(Job, "job", job_id)
-
-    async def jobs_of_case(self, case_id: str) -> list[Job]:
-        return await self._many(
-            Job, "SELECT * FROM job WHERE case_id = $case ORDER BY created_at;", {"case": case_id}
-        )
-
-    async def jobs_with_expired_lease(self, now: datetime) -> list[Job]:
-        return await self._many(
-            Job,
-            "SELECT * FROM job WHERE state = 'running' AND lease_until != NONE "
-            "AND lease_until < $now;",
-            {"now": now},
-        )
-
-    async def attempts(self, job_id: str) -> list[Attempt]:
-        return await self._many(
-            Attempt, "SELECT * FROM attempt WHERE job_id = $job ORDER BY number;", {"job": job_id}
-        )
-
-    async def outbox_entry(self, entry_id: str) -> OutboxEntry | None:
-        return await self._one(OutboxEntry, "outbox_entry", entry_id)
-
-    async def outbox_of_job(self, job_id: str) -> list[OutboxEntry]:
-        return await self._many(
-            OutboxEntry,
-            "SELECT * FROM outbox_entry WHERE job_id = $job ORDER BY created_at, id;",
-            {"job": job_id},
-        )
-
-    async def pending_outbox(self, now: datetime, *, limit: int) -> list[OutboxEntry]:
-        return await self._many(
-            OutboxEntry,
-            "SELECT * FROM outbox_entry WHERE state = 'pending' AND not_before <= $now "
-            "AND (lease_until = NONE OR lease_until <= $now) ORDER BY not_before, id LIMIT $limit;",
-            {"now": now, "limit": limit},
-        )
-
-    async def extraction(self, extraction_id: str) -> Extraction | None:
-        return await self._one(Extraction, "extraction", extraction_id)
-
-    async def extractions_of_document(self, document_id: str) -> list[Extraction]:
-        return await self._many(
-            Extraction,
-            "SELECT * FROM extraction WHERE document_id = $document ORDER BY created_at;",
-            {"document": document_id},
-        )
-
-    async def chunks(self, extraction_id: str) -> list[Chunk]:
-        return await self._many(
-            Chunk,
-            "SELECT * FROM chunk WHERE extraction_id = $extraction ORDER BY position;",
-            {"extraction": extraction_id},
-        )
-
-    async def extractions_of_case(self, case_id: str) -> list[Extraction]:
-        return await self._many(
-            Extraction,
-            "SELECT * FROM extraction WHERE case_id = $case ORDER BY created_at;",
-            {"case": case_id},
-        )
-
     async def entity_by_value(self, kind: EntityKind, value: str) -> Entity | None:
         entities = await self._many(
             Entity,
@@ -306,50 +202,6 @@ class SurrealLedger:
             "ORDER BY captured_at;",
             {"kind": kind.value, "value": value},
         )
-
-    async def stale_artifacts(self, now: datetime, *, limit: int) -> list[Artifact]:
-        return await self._many(
-            Artifact,
-            "SELECT * FROM artifact WHERE state = $state AND expires_at <= $now "
-            "ORDER BY expires_at LIMIT $limit;",
-            {"state": ArtifactState.UPLOADING.value, "now": now, "limit": limit},
-        )
-
-    async def expired_documents(self, now: datetime, *, limit: int) -> list[Document]:
-        return await self._many(
-            Document,
-            "SELECT * FROM document WHERE state = $state AND expires_at <= $now "
-            "ORDER BY expires_at LIMIT $limit;",
-            {"state": DocumentState.ACCEPTED.value, "now": now, "limit": limit},
-        )
-
-    async def job_counts(self) -> list[JobCount]:
-        rows = await self._query(
-            "SELECT type, state, count() AS total FROM job GROUP BY type, state;", {}
-        )
-        return [
-            JobCount(
-                type=JobType(str(row["type"])),
-                state=JobState(str(row["state"])),
-                count=int(str(row["total"])),
-            )
-            for row in rows
-        ]
-
-    async def oldest_queued_job(self) -> Job | None:
-        jobs = await self._many(
-            Job,
-            "SELECT * FROM job WHERE state = $state ORDER BY created_at LIMIT 1;",
-            {"state": JobState.QUEUED.value},
-        )
-        return jobs[0] if jobs else None
-
-    async def count_cases(self, states: Sequence[CaseState]) -> int:
-        rows = await self._query(
-            "SELECT count() AS total FROM case WHERE state IN $states GROUP ALL;",
-            {"states": [state.value for state in states]},
-        )
-        return int(str(rows[0]["total"])) if rows else 0
 
     async def signals_of_case(self, case_id: str) -> list[Signal]:
         return await self._many(

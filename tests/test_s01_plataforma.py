@@ -6,7 +6,6 @@ from uuid import uuid4
 import httpx
 import pytest
 from agno.agent import Agent
-from opentelemetry.sdk.trace import TracerProvider
 
 from argos.config import SecretValue, Settings
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
@@ -21,7 +20,7 @@ from argos.platform.mcp import (
     run_query,
 )
 from argos.platform.surreal import JsonValue, SurrealError, SurrealHttp
-from tests.support import names_in, wait_for_observations
+from tests.support import names_in
 
 pytestmark = pytest.mark.anyio
 
@@ -190,35 +189,6 @@ async def test_litellm_mock_model_reports_cost(settings: Settings) -> None:
     content = response.json()["choices"][0]["message"]["content"]
     assert "mock" in content.lower()
     assert float(response.headers["x-litellm-response-cost"]) > 0
-
-
-async def test_minimal_agent_leaves_trace_in_langfuse(
-    settings: Settings, tracing: TracerProvider
-) -> None:
-    """S01.7 un agente mínimo deja traza en Langfuse."""
-    nonce = uuid4().hex
-    user_id = f"s01-{nonce}"
-    model = build_model(settings, MOCK_MODEL)
-    agent = Agent(name="S01 smoke", model=model, telemetry=False)
-    tracer = tracing.get_tracer("argos-tests")
-    try:
-        with tracer.start_as_current_span("s01-smoke") as root:
-            root.set_attribute("langfuse.user.id", user_id)
-            await run_agent(agent, f"ping {nonce}", user_id=user_id, session_id=f"session-{nonce}")
-        trace_id = format(root.get_span_context().trace_id, "032x")
-        tracing.force_flush()
-    finally:
-        await close_model(model)
-
-    observations = await wait_for_observations(settings, trace_id=trace_id, timeout_seconds=60)
-    assert observations, f"Langfuse no recibió ninguna observación de la traza {trace_id}"
-    with_user = [
-        user
-        for observation in observations
-        if isinstance((user := observation.get("userId")), str) and user
-    ]
-    assert with_user, "Langfuse no recibió el identificador de usuario"
-    assert all(u == user_id for u in with_user), with_user
 
 
 async def test_agno_sessions_live_only_in_agno_database(settings: Settings) -> None:

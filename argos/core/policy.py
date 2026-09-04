@@ -1,15 +1,9 @@
-"""Valores de R1, R18, R19 y R21 con sus defectos de v1. Configurables hacia abajo (A6)."""
+"""Valores de R1, R15 y R21 con sus defectos de v1. Configurables hacia abajo (A6)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-
-
-@dataclass(frozen=True)
-class DocumentLimits:
-    max_bytes: int = 25 * 1024 * 1024
-    max_pages: int = 500
 
 
 @dataclass(frozen=True)
@@ -21,52 +15,17 @@ class NoticeLimits:
 
 @dataclass(frozen=True)
 class Retention:
-    full_content: timedelta = timedelta(days=30)
     case: timedelta = timedelta(days=365)
-    staging: timedelta = timedelta(hours=6)
     notice_dedup_window: timedelta = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
-class JobPolicy:
-    max_attempts: int = 3
-    lease: timedelta = timedelta(minutes=5)
-    outbox_lease: timedelta = timedelta(seconds=30)
-    backoff_base: timedelta = timedelta(seconds=30)
-    backoff_factor: int = 4
-    # Mayor que `outbox_lease`: cubre al dispatcher que publicó y murió antes de marcarlo.
-    duplicate_window: timedelta = timedelta(minutes=5)
-    max_deliveries: int = 3
-    message_ttl: timedelta = timedelta(days=7)
-
-    def backoff(self, failed_attempt: int) -> timedelta:
-        multiplier = 1
-        for _ in range(failed_attempt - 1):
-            multiplier *= self.backoff_factor
-        return self.backoff_base * multiplier
-
-
-@dataclass(frozen=True)
-class ExtractionPolicy:
-    min_usable_chars_per_page: int = 24
-    chunk_max_chars: int = 1200
-    ocr_language: str = "spa+eng"
-    render_scale: float = 2.0
-
-
-@dataclass(frozen=True)
 class AnalysisPolicy:
-    chunk_budget: int = 8
     budget: timedelta = timedelta(seconds=60)
 
 
 @dataclass(frozen=True)
 class Policy:
-    documents: DocumentLimits = DocumentLimits()
     notices: NoticeLimits = NoticeLimits()
     retention: Retention = Retention()
-    jobs: JobPolicy = JobPolicy()
-    extraction: ExtractionPolicy = ExtractionPolicy()
     analysis: AnalysisPolicy = AnalysisPolicy()
-    extractor_version: str = "pdf-text-v1"
-    extraction_options: str = "{}"

@@ -1,5 +1,5 @@
-"""Traducción pura entre el clúster de agentes y el núcleo: qué se le pide y cómo
-se lee su respuesta. El prompt lleva referencias, nunca texto del documento (R8)."""
+"""Traducción pura entre los agentes y el núcleo: qué se les pide y cómo se lee
+su respuesta. Lo que el modelo devuelve es material de trabajo, nunca autoridad."""
 
 from __future__ import annotations
 
@@ -8,39 +8,36 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import cast
 
-from argos.core.analysis import DraftEntity, DraftSignal, Evidence, normalized_identifier
+from argos.core.analysis import DraftEntity, DraftSignal, Evidence
+from argos.core.identifiers import normalized_identifier
 from argos.core.model import Analysis, EntityKind, Strength
 from argos.core.ports import CaseBrief, ConversationBrief, Investigation, VerdictBrief
 
 INVESTIGATION_CONTRACT = (
     "Responde solo con un objeto JSON con las claves signals, entities y missing. "
     'Cada señal es {"analysis","code","strength","source","observed_at","value",'
-    '"quote","official","recidivism"}, con analysis en '
-    "[triage, registries, domain, patterns, memory, document], strength en "
-    "[strong, weak] y observed_at en ISO 8601. Cada entidad es "
-    '{"kind","value","strength"}, con kind en '
-    "[domain, phone, email, iban, wallet, handle, company]. En missing pon el "
-    "nombre de cada análisis que no hayas podido completar. No inventes "
-    "evidencia: una señal sin fuente, fecha, valor y cita se descarta."
+    '"quote"}, con analysis en [triage, patterns], strength en [strong, weak] y '
+    "observed_at en ISO 8601. Cada entidad es {\"kind\",\"value\",\"strength\"}, con "
+    "kind en [domain, phone, email, iban, wallet, handle, company]. En missing pon "
+    "el nombre de cada análisis que no hayas podido completar. No inventes "
+    "evidencia: una señal sin fuente, fecha, valor y cita se descarta. La cita "
+    "tiene que ser literal del aviso."
 )
 
 
 def investigation_prompt(brief: CaseBrief) -> str:
     lines = [
         f"Caso {brief.case_id}. Idioma de la respuesta: {brief.language}.",
-        "Analiza los indicios de fraude financiero de este caso.",
+        "Analiza los indicios de fraude financiero de este aviso.",
+        "--- aviso ---",
+        brief.text,
+        "--- fin del aviso ---",
     ]
-    if brief.extractions:
-        lines.append("Extracciones disponibles (pide sus fragmentos con tus herramientas):")
-        lines.extend(
-            f"- {reference.extraction_id} del documento {reference.document_id}, "
-            f"{reference.page_count} páginas"
-            for reference in brief.extractions
-        )
-    else:
-        lines.append("No hay ninguna extracción disponible.")
-    if brief.missing:
-        lines.append(f"Entradas que no se pudieron procesar: {', '.join(brief.missing)}.")
+    if brief.links:
+        lines.append(f"Enlaces citados: {', '.join(brief.links)}.")
+    if brief.entities:
+        lines.append("Identificadores ya extraídos por el sistema (no los repitas):")
+        lines.extend(f"- {entity.kind}: {entity.value}" for entity in brief.entities)
     lines.append(INVESTIGATION_CONTRACT)
     return "\n".join(lines)
 
@@ -101,11 +98,6 @@ def _text(item: dict[str, object], key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _flag(item: dict[str, object], key: str) -> bool:
-    value = item.get(key)
-    return value is True
-
-
 def _observed_at(item: dict[str, object]) -> datetime | None:
     raw = _text(item, "observed_at")
     if not raw:
@@ -123,10 +115,15 @@ def _member[E: (Analysis, Strength, EntityKind)](values: type[E], raw: str) -> E
         return None
 
 
+REPORTABLE_ANALYSES = frozenset({Analysis.TRIAGE, Analysis.PATTERNS})
+
+
 def _signal(item: dict[str, object]) -> DraftSignal | None:
+    """`official` y `recidivism` no se leen del informe: los pone el núcleo tras
+    consultar el catálogo y la memoria, así una alucinación no llega a crítico."""
     analysis = _member(Analysis, _text(item, "analysis"))
     strength = _member(Strength, _text(item, "strength"))
-    if analysis is None or strength is None:
+    if analysis is None or analysis not in REPORTABLE_ANALYSES or strength is None:
         return None
     return DraftSignal(
         analysis=analysis,
@@ -138,8 +135,6 @@ def _signal(item: dict[str, object]) -> DraftSignal | None:
             value=_text(item, "value"),
             quote=_text(item, "quote"),
         ),
-        official=_flag(item, "official"),
-        recidivism=_flag(item, "recidivism"),
     )
 
 
@@ -176,6 +171,13 @@ def parse_investigation(text: str, *, expected: Sequence[Analysis]) -> Investiga
         entity for item in _items(report, "entities") if (entity := _entity(item)) is not None
     )
     return Investigation(signals=signals, entities=entities, missing=_missing(report))
+
+
+def quote_is_literal(quote: str, text: str) -> bool:
+    """R3: una cita que no está en el aviso no sostiene nada."""
+    return bool(quote.strip()) and " ".join(quote.split()).casefold() in " ".join(
+        text.split()
+    ).casefold()
 
 
 NO_VERDICT_YET = (

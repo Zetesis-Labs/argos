@@ -1,75 +1,55 @@
-"""Capacidades del gateway (S02 §5). Cada una es código determinista: valida,
-resuelve el tenant que ya trae la identidad y devuelve estado, nunca topología."""
+"""Capacidades del gateway. Cada una es código determinista: valida, resuelve el
+tenant que ya trae la identidad y devuelve estado, nunca topología."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
 
 from argos.core.analysis import verdict_language
-from argos.core.model import TERMINAL_CASE_STATES, Case, CaseState
+from argos.core.model import CaseState
 from argos.core.notices import Notice
-from argos.core.ports import CaseAdvisor, ConversationBrief, LedgerConflictError
+from argos.core.ports import CaseAdvisor, ConversationBrief, Investigator, Narrator
 from argos.core.reports import NO_VERDICT_YET
-from argos.core.reprocess import ReprocessRefused, plan_reprocess
+from argos.usecases.analysis import analyze_case
 from argos.usecases.deps import Bookkeeping
 from argos.usecases.notices import NoticeRefused, open_notice_case
 from argos.usecases.queries import VerdictSummary, get_case, summary_of
 
-Sleep = Callable[[float], Awaitable[None]]
+type Analysts = tuple[Investigator, Narrator]
+type Investigators = Callable[[str, str], Analysts]
 
 
 @dataclass(frozen=True)
 class NoticeAnalysis:
     case_id: str
-    job_id: str
     state: CaseState
     verdict: VerdictSummary | None
     reused: bool
 
-    @property
-    def settled(self) -> bool:
-        return self.state in TERMINAL_CASE_STATES
-
-
-async def wait_for_case(
-    services: Bookkeeping, case_id: str, *, sleep: Sleep, budget: timedelta, poll: float
-) -> Case | None:
-    """R15: se espera el estado terminal hasta el presupuesto, nunca más."""
-    deadline = services.clock.now() + budget
-    while True:
-        case = await services.ledger.case(case_id)
-        if case is None or case.state in TERMINAL_CASE_STATES:
-            return case
-        if services.clock.now() >= deadline:
-            return case
-        await sleep(poll)
-
 
 async def analyze_notice(
     services: Bookkeeping,
+    investigators: Investigators,
     *,
     tenant_id: str,
     notice: Notice,
     correlation_id: str,
-    sleep: Sleep,
-    poll: float = 0.2,
 ) -> NoticeAnalysis | NoticeRefused:
+    """El aviso breve se analiza en la misma llamada: no hay nada que reanudar."""
     opened = await open_notice_case(
         services, tenant_id=tenant_id, notice=notice, correlation_id=correlation_id
     )
     if isinstance(opened, NoticeRefused):
         return opened
-    settled = await wait_for_case(
-        services, opened.case_id, sleep=sleep, budget=services.policy.analysis.budget, poll=poll
-    )
-    state = settled.state if settled is not None else CaseState.RECEIVED
+    if not opened.reused:
+        investigator, narrator = investigators(tenant_id, opened.case.id)
+        await analyze_case(services, investigator, narrator, case_id=opened.case.id)
+    settled = await services.ledger.case(opened.case.id)
     return NoticeAnalysis(
-        case_id=opened.case_id,
-        job_id=opened.job_id,
-        state=state,
-        verdict=summary_of(await services.ledger.current_verdict(opened.case_id)),
+        case_id=opened.case.id,
+        state=settled.state if settled is not None else CaseState.RECEIVED,
+        verdict=summary_of(await services.ledger.current_verdict(opened.case.id)),
         reused=opened.reused,
     )
 
@@ -109,43 +89,3 @@ async def ask_case(
         )
     )
     return CaseAnswer(case_id=case_id, answer=answer, verdict=view.verdict)
-
-
-@dataclass(frozen=True)
-class Reprocessed:
-    case_id: str
-    document_id: str
-    job_id: str
-    options: str
-
-
-async def reprocess_document(
-    services: Bookkeeping, *, document_id: str, correlation_id: str
-) -> Reprocessed | ReprocessRefused:
-    """Del curador: cruza tenants por diseño y queda atribuido (constitución §6)."""
-    ledger = services.ledger
-    document = await ledger.document(document_id)
-    if document is None:
-        return ReprocessRefused("document.not_found")
-    case = await ledger.case(document.case_id)
-    if case is None:
-        return ReprocessRefused("case.not_found")
-    plan = plan_reprocess(
-        case=case,
-        document=document,
-        jobs=await ledger.jobs_of_case(case.id),
-        job_id=services.ids.new_id(),
-        now=services.clock.now(),
-        policy=services.policy.jobs,
-        extractor_version=services.policy.extractor_version,
-        correlation_id=correlation_id,
-    )
-    if isinstance(plan, ReprocessRefused):
-        return plan
-    try:
-        await ledger.commit(plan.ops)
-    except LedgerConflictError:
-        return ReprocessRefused("job.busy")
-    return Reprocessed(
-        case_id=case.id, document_id=document.id, job_id=plan.job_id, options=plan.options
-    )

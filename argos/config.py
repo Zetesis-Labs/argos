@@ -22,12 +22,12 @@ def environment_secret(name: str, default: str) -> SecretValue:
     return SecretValue(environment(name, default))
 
 
-WORKLOADS = ("gateway", "dispatcher", "resumer", "analyzer", "worker", "janitor")
+WORKLOADS = ("gateway",)
 
 
 @dataclass(frozen=True)
 class WorkloadCredentials:
-    """Una identidad por workload (S02 §7): nadie comparte credencial."""
+    """Una identidad por workload: nadie comparte credencial."""
 
     user: str
     password: SecretValue
@@ -56,23 +56,6 @@ class Settings:
             "SURREAL_RUNTIME_PASSWORD", "runtime-dev-password"
         )
     )
-    artifact_endpoint: str = field(
-        default_factory=lambda: environment("ARTIFACT_ENDPOINT", "http://rustfs:9000")
-    )
-    artifact_bucket: str = field(default_factory=lambda: environment("ARTIFACT_BUCKET", "argos"))
-    artifact_region: str = field(
-        default_factory=lambda: environment("ARTIFACT_REGION", "us-east-1")
-    )
-    artifact_access_key: str = field(
-        default_factory=lambda: environment("RUSTFS_ACCESS_KEY", "argos-artifacts")
-    )
-    artifact_secret_key: SecretValue = field(
-        default_factory=lambda: environment_secret(
-            "RUSTFS_SECRET_KEY", "argos-artifacts-dev-secret"
-        )
-    )
-
-    nats_url: str = field(default_factory=lambda: environment("NATS_URL", "nats://nats:4222"))
     ops_namespace: str = field(default_factory=lambda: environment("OPS_NAMESPACE", "argos"))
     ops_database: str = field(default_factory=lambda: environment("OPS_DATABASE", "ops"))
     agno_namespace: str = field(default_factory=lambda: environment("AGNO_NAMESPACE", "agno"))
@@ -104,14 +87,6 @@ class Settings:
             "GATEWAY_IDENTITIES",
             "dev-service-token=dev:tenant-dev,dev-curator-token=curator:curator",
         )
-    )
-
-    langfuse_host: str = field(
-        default_factory=lambda: environment("LANGFUSE_HOST", "http://langfuse-web:3000")
-    )
-    langfuse_public_key: str = field(default_factory=lambda: environment("LANGFUSE_PUBLIC_KEY", ""))
-    langfuse_secret_key: SecretValue = field(
-        default_factory=lambda: environment_secret("LANGFUSE_SECRET_KEY", "")
     )
 
     def workload(self, name: str) -> WorkloadCredentials:

@@ -127,8 +127,8 @@ def at_least(level: RiskLevel, floor: RiskLevel) -> RiskLevel:
 def score(signals: Sequence[DraftSignal], *, degraded: bool) -> RiskLevel:
     if not signals:
         return RiskLevel.UNDETERMINED if degraded else RiskLevel.LOW
-    # La marca la pone quien observa: oficial vigente sobre identificador fuerte o
-    # nombre exacto, y reincidencia fuerte de un caso confirmado (R4).
+    # Solo el código marca `official` y `recidivism`: salen del catálogo y de la
+    # memoria, nunca de la respuesta de un modelo (R4, constitución §5).
     if any(signal.official or signal.recidivism for signal in signals):
         return RiskLevel.CRITICAL
     strong = [signal for signal in signals if signal.strength is Strength.STRONG]
@@ -179,20 +179,3 @@ def aggregate_history(
         last_seen_at=seen[-1] if seen else None,
         confirmed=any(appearance.review_state is ReviewState.CONFIRMED for appearance in counted),
     )
-
-
-CASEFOLDED = (EntityKind.DOMAIN, EntityKind.EMAIL, EntityKind.HANDLE)
-COMPACTED = (EntityKind.IBAN, EntityKind.PHONE, EntityKind.WALLET)
-
-
-def normalized_identifier(kind: EntityKind, value: str) -> str:
-    """Lo mínimo para que la memoria compartida no se parta por mayúsculas o
-    espacios. Todavía no es R2: falta el dominio registrable, el prefijo
-    telefónico por defecto y los dígitos de control del IBAN."""
-    trimmed = " ".join(value.split())
-    if kind in CASEFOLDED:
-        return trimmed.casefold()
-    if kind in COMPACTED:
-        compact = trimmed.replace(" ", "").replace("-", "")
-        return compact.upper() if kind is EntityKind.IBAN else compact
-    return trimmed

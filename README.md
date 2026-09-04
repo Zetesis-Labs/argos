@@ -1,135 +1,99 @@
 # Argos
 
-Segunda opinión ante un posible fraude financiero. Argos recibe mensajes,
-enlaces, capturas o documentos PDF y produce un veredicto explicado: nivel de
-riesgo, indicios con evidencia, entidades implicadas, reincidencias y acciones
-recomendadas.
+Segunda opinión ante un posible fraude financiero. Argos recibe un aviso —un
+mensaje o un enlace— y produce un veredicto explicado: nivel de riesgo, indicios
+con evidencia, entidades implicadas, reincidencias y acciones recomendadas.
 
 No afirma que algo sea una estafa. Los agentes reúnen e interpretan evidencias;
 un núcleo determinista valida señales, calcula el nivel y gobierna los estados.
 
 ## Estado del proyecto
 
+Argos es una prueba de concepto deliberadamente pequeña: un proceso, tres
+capacidades y el catálogo curado que viaja con el checkout.
+
 - **S01 implementada y verificada**: SurrealDB 3 con MCP, separación
-  `agno/sessions` y `argos/ops`, LiteLLM, Langfuse, devcontainer y anclaje de
-  specs a tests.
-- **S02 implementada**: libro de trabajos y outbox, NATS JetStream, RustFS,
-  worker de documentos, clúster de agentes, workflow de veredicto, gateway con
-  sus capacidades, janitor de retención, métricas, una identidad por workload y
-  advertencias sintéticas de demostración. Sus 55 casos tienen test.
+  `agno/sessions` y `argos/ops`, LiteLLM, devcontainer y anclaje de specs a tests.
+- **S02 implementada**: caso con su aviso, extracción de identificadores por
+  código, señales oficiales y de reincidencia derivadas del catálogo y de la
+  memoria, cuatro agentes de apoyo, núcleo de puntuación y gateway con sus tres
+  capacidades.
 - **S03 implementada**: corpus OKF en Markdown/Git, bundle validado y
   versionado, explorador gráfico opcional y proyección local atómica en
-  SurrealDB. Sus siete casos tienen test.
-- Las verticales del análisis real —identificadores, dominio, puntuación,
-  veredicto, fuentes y memoria— siguen el orden de `specs/README.md`.
+  SurrealDB.
+- Las verticales siguientes —dominio, puntuación con datos reales, fuentes
+  oficiales y memoria— siguen el orden de `specs/README.md`.
 
-AgentOS sirve el gateway actual en el puerto `7777`. El devcontainer arranca los
-seis procesos de larga vida por separado después de preparar la plataforma.
+La vertical asíncrona anterior —AgentOS, A2A, NATS JetStream, RustFS, worker de
+PDF, dispatcher, resumer, analizador y janitor— se implementó, se verificó y se
+retiró el 2026-09-04 por desproporcionada. Su diseño está en
+`specs/parked/S02-pipeline-asincrono.md` y su código en el tag `s02-async`.
 
-## Arquitectura objetivo
+## Arquitectura
 
 ```text
-API / A2A → AgentOS gateway → workflow + equipo de agentes
-                                   │ MCP
-                              SurrealDB
-                                   │ outbox
-                              NATS JetStream → workers
-                                                    │
-                                               RustFS
+POST /v1/notices → gateway → núcleo (identificadores, señales, nivel)
+                                 │              │
+                            SurrealDB      triage · patterns
+                            argos/ops      writer · conversation
+                                 │
+                    proyección del catálogo OKF
 ```
 
-- **Agno AgentOS** aloja el gateway, los agentes especialistas, el equipo de
-  investigación y el workflow de veredicto.
-- **A2A** comunica AgentOS separados y expone capacidades completas del gateway.
-  Dentro de una instancia, Agno coordina mediante Team y Workflow.
-- **SurrealDB `argos/ops`** es la fuente de verdad para casos, grafo, trabajos,
-  extracciones y outbox. Los agentes acceden mediante herramientas MCP acotadas.
+- **El gateway** es el único proceso de larga vida. Analiza el aviso dentro de
+  la llamada: no hay cola, no hay trabajo durable y no hay nada que reanudar.
+- **`argos/core`** no hace I/O. Ahí viven la extracción de identificadores, el
+  filtro de evidencia, la puntuación y la composición del veredicto.
+- **SurrealDB `argos/ops`** es la fuente de verdad de casos, entidades, señales
+  y veredictos. Un agente solo la lee por herramientas acotadas por capacidad,
+  tenant y caso.
 - **El conocimiento curado** se escribe como fichas Markdown en Git. El bundle
-  OKF versionado alimenta tanto el explorador como una proyección reconstruible
-  en SurrealDB; Argos no necesita red ni el explorador para analizar.
-- **SurrealDB `agno/sessions`** pertenece al runtime de Agno y no sustituye la
-  memoria operacional.
-- **NATS JetStream** entrega comandos y eventos por referencia. Los mensajes
-  llevan `job_id` e `attempt`; no transportan PDFs, texto completo ni resultados.
-- **RustFS** guarda artefactos privados S3-compatible. El código depende del
-  puerto neutral `S3ObjectStore`, que escribe en flujo calculando el hash, lee
-  de forma acotada y firma URLs breves.
-- **Workers stateless** ejecutan tareas pesadas como extracción y OCR de PDF. No
-  son agentes, no se exponen por A2A y no toman decisiones de riesgo. El de
-  documentos lee con pypdfium2 y solo pasa por Tesseract las páginas sin texto
-  utilizable.
+  OKF versionado alimenta el explorador y una proyección reconstruible en
+  SurrealDB; Argos no necesita red para analizar.
+- **SurrealDB `agno/sessions`** pertenece al runtime de Agno y guarda
+  referencias, no el aviso.
 - **LiteLLM** es la única pasarela a modelos. El único proveedor externo
-  soportado es OpenAI; **Langfuse** recibe las trazas sin contenido sensible.
+  soportado es OpenAI, y el modelo por defecto es `mock`.
 
-El documento, extracción y chunks pertenecen al tenant y al caso, nunca al
-agente o worker. Una sesión conserva solo referencias, por lo que el caso puede
-reanudar aunque desaparezca quien inició el trabajo.
+## Qué decide el código y qué decide el modelo
+
+| Decisión | Quién |
+|---|---|
+| Identificadores del aviso | código (regex, dígitos de control, dominio registrable) |
+| Advertencia oficial vigente | código, consultando el catálogo proyectado |
+| Reincidencia confirmada | código, consultando la memoria compartida |
+| Tipología, manipulación, indicios del texto | agentes, con cita literal obligatoria |
+| Nivel de riesgo | `core.score`, nunca un prompt |
+| Explicación del nivel | `verdict_writer`, sin poder cambiarlo |
+
+Un informe de un modelo que se declara oficial o reincidente se descarta al
+parsearlo, y una señal cuya cita no aparece en el aviso no puntúa.
 
 ## Agentes
 
 | Componente | Cometido |
 |---|---|
-| `triage_agent` | Extraer identificadores, idioma y tipologías candidatas |
-| `registries_agent` | Consultar advertencias oficiales |
-| `domain_agent` | Analizar registro, certificado y reputación de dominios |
-| `patterns_agent` | Detectar patrones de manipulación con citas |
-| `memory_agent` | Encontrar entidades y casos previos |
-| `document_agent` | Consultar trabajos, manifiestos y fragmentos autorizados; no crea ni reprocesa trabajos |
+| `triage_agent` | Interpretar el aviso, proponer tipologías y consultar contexto |
+| `patterns_agent` | Detectar patrones de manipulación con citas literales |
 | `verdict_writer` | Explicar un nivel calculado por código |
 | `conversation_agent` | Responder sobre un caso sin mutar su veredicto |
-| `investigation_team` | Coordinar especialistas de análisis |
-| `verdict_workflow` | Controlar estados, tiempo, degradación y cierre |
 
 ## Capacidades del gateway
 
-| Capacidad | Ruta | Quién |
-|---|---|---|
-| `analyze_notice` | `POST /v1/notices` | servicio |
-| `submit_document` | `POST /v1/documents` | servicio |
-| `get_job` | `GET /v1/jobs/{job_id}` | servicio |
-| `get_case` | `GET /v1/cases/{case_id}` | servicio |
-| `ask_case` | `POST /v1/cases/{case_id}/questions` | servicio |
-| `reprocess_document` | `POST /v1/documents/{document_id}/reprocess` | curador |
+| Capacidad | Ruta |
+|---|---|
+| `analyze_notice` | `POST /v1/notices` |
+| `get_case` | `GET /v1/cases/{case_id}` |
+| `ask_case` | `POST /v1/cases/{case_id}/questions` |
 
-El tenant sale siempre de la credencial, nunca del cuerpo. La tarjeta de agente
-está en `/.well-known/agent-card.json` y declara como habilidades esas
-capacidades; las de texto se atienden además por JSON-RPC en
-`POST /v1/a2a/messages`. Los especialistas y los workers no se publican: no
-tienen tarjeta ni endpoint, y el plano de control de AgentOS es del curador.
-
-`analyze_notice` espera el estado terminal hasta el presupuesto de R15 y, si no
-llega, responde `202` con el caso en curso: el análisis es un trabajo durable y
-sobrevive al proceso que atendió la llamada.
-
-## Procesamiento de PDF
-
-1. El gateway valida y guarda el original privado en RustFS.
-2. Crea documento, trabajo y outbox en una operación durable de SurrealDB.
-3. El dispatcher publica `argos.jobs.document.extract.v1` en NATS.
-4. El worker relee el trabajo, extrae texto/OCR y confirma derivados y evento de
-   outbox en una misma transacción.
-5. El dispatcher publica el evento con referencias; el resumer crea el trabajo
-   de análisis del caso y el workflow relee SurrealDB y reanuda.
-6. El analizador reclama ese trabajo, pasa el caso a `analyzing` y ejecuta el
-   equipo de investigación; el agente obtiene únicamente fragmentos autorizados
-   y acotados por presupuesto.
-7. El núcleo calcula el nivel, el redactor lo explica sin poder cambiarlo y el
-   caso cierra con su veredicto versionado y su evento en el outbox.
-
-La entrega es al menos una vez y el efecto es idempotente por documento,
-versión de extractor y opciones; un documento se identifica dentro de su caso
-por el hash del contenido. Un fallo terminal queda operable en SurrealDB para
-inspección y reproceso. Todo análisis de caso, también el de un aviso breve,
-es un trabajo durable que sobrevive al proceso que atendió la llamada.
+El tenant sale siempre de la credencial, nunca del cuerpo.
 
 ## Arrancar el entorno
 
-Con Dev Containers basta con «Reopen in Container»: Compose levanta la
-infraestructura y los seis procesos, y una tarea idempotente aplica el esquema,
-declara JetStream, crea el bucket y proyecta el bundle de conocimiento incluido
-en el checkout.
-SurrealDB y NATS de test están aislados, por lo que la suite puede ejecutarse
-mientras el producto sigue activo sin que sus workers consuman datos de prueba.
+Con Dev Containers basta con «Reopen in Container»: Compose levanta SurrealDB,
+LiteLLM y el contenedor de trabajo, y una tarea idempotente aplica el esquema y
+proyecta el bundle de conocimiento incluido en el checkout. Una SurrealDB de
+test aislada permite ejecutar la suite mientras el producto sigue activo.
 
 Sin la extensión, el mismo entorno completo se arranca desde el host con:
 
@@ -149,7 +113,6 @@ cp .env.example .devcontainer/.env
 Para comprobar el checkout:
 
 ```bash
-docker exec argos-app-1 uv run rehearse-store
 docker exec argos-app-1 uv run pytest
 docker exec argos-app-1 uv run spec-check
 docker exec argos-app-1 uv run ruff check .
@@ -159,19 +122,17 @@ docker exec argos-app-1 uv run pyright
 
 No se ejecutan tests, lint, tipos ni builds desde el host.
 
-`bootstrap-local` es la única preparación del entorno. `bootstrap-db`,
-`bootstrap-bus`, `bootstrap-store` y `project-knowledge` siguen disponibles
-para diagnosticar cada pieza por separado.
+`bootstrap-local` es la única preparación del entorno; `bootstrap-db` y
+`project-knowledge` siguen disponibles para diagnosticar cada pieza por separado.
 
 `project-knowledge` valida `knowledge/dist/okf-graph.json` y activa en una sola
 transacción sus nodos, relaciones y tres advertencias sintéticas. Sus URLs usan
 dominios reservados `.example`; no son datos reales ni sustituyen la ingesta de
-fuentes de S08. La advertencia activa de dominio puede consultarse con
-`example-broker.test`. El modelo `mock` no extrae identificadores ni produce
-señales, por lo que una demostración completa del veredicto seguirá devolviendo
-`undetermined` hasta implementar S04 o usar un investigador controlado.
+fuentes oficiales. La advertencia activa de dominio puede comprobarse enviando
+un aviso que cite `example-broker.test`: el veredicto sale `critical` por código,
+sin que intervenga el modelo.
 
-El explorador no bloquea Argos. Para reconstruir y servirlo opcionalmente en
+El explorador no bloquea Argos. Para reconstruirlo y servirlo opcionalmente en
 `http://localhost:8400`:
 
 ```bash
@@ -182,20 +143,13 @@ Tras curar fichas, el bundle se regenera dentro de ese contenedor con
 `docker compose -f .devcontainer/docker-compose.yml --profile docs run --rm knowledge bash okf/update-bundle.sh`
 y se revisa junto al corpus en Git.
 
-| Servicio | URL en el host |
-|---|---|
-| AgentOS | `http://localhost:7777` (gateway: capacidades, tarjeta y plano de control) |
-| LiteLLM | `http://localhost:4100` |
-| Langfuse | `http://localhost:3200` |
-| SurrealDB | `http://localhost:8100` (MCP en `/mcp`) |
-| Surrealist | `http://localhost:8200` |
-| NATS JetStream | `nats://localhost:4300` (monitor en `http://localhost:8300`) |
-| RustFS | `http://localhost:9390` (consola en `http://localhost:9391`) |
-| Conocimiento OKF | `http://localhost:8400` (perfil opcional `docs`) |
-
-El compose incluye Redis y un almacén MinIO exclusivamente como dependencias
-internas de Langfuse. El código de Argos no los usa como cola ni como almacén
-de artefactos: la cola es NATS JetStream y el almacén es RustFS.
+| Servicio | URL en el host | Perfil |
+|---|---|---|
+| Gateway | `http://localhost:7777` | `services` |
+| LiteLLM | `http://localhost:4100` | por defecto |
+| SurrealDB | `http://localhost:8100` (MCP en `/mcp`) | por defecto |
+| Surrealist | `http://localhost:8200` | `tools` |
+| Conocimiento OKF | `http://localhost:8400` | `docs` |
 
 ## Documentación
 
@@ -205,7 +159,7 @@ Lee en este orden:
 2. [`specs/argos/veredicto/functional-specs.md`](specs/argos/veredicto/functional-specs.md): comportamiento del producto.
 3. [`specs/argos/conocimiento/functional-specs.md`](specs/argos/conocimiento/functional-specs.md): curación, exploración y proyección.
 4. [`specs/S01-plataforma.md`](specs/S01-plataforma.md): base ya verificada.
-5. [`specs/S02-agentos-workers.md`](specs/S02-agentos-workers.md): arquitectura completa del clúster y workers.
+5. [`specs/S02-nucleo-y-agentes.md`](specs/S02-nucleo-y-agentes.md): caso, señales, agentes y gateway.
 6. [`specs/S03-conocimiento-okf.md`](specs/S03-conocimiento-okf.md): fundación ejecutable de conocimiento.
 7. [`specs/README.md`](specs/README.md): anclaje, estado e índice de fases.
 
@@ -216,5 +170,5 @@ Lee en este orden:
 - `typing.Any` y las supresiones de tipos están prohibidos, también en tests.
 - El LLM no puntúa, no decide permisos y no controla transiciones.
 - Ningún proveedor de modelos se llama fuera de LiteLLM.
-- Ningún documento completo entra en sesiones, NATS, logs o trazas.
+- Ningún aviso completo entra en sesiones, logs ni errores públicos.
 - Datos de prueba exclusivamente sintéticos.

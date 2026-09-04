@@ -1,6 +1,6 @@
-"""Herramientas que recibe cada agente: las de su capacidad y ninguna más (S02 §7).
+"""Herramientas que recibe cada agente: las de su capacidad y ninguna más.
 
-Devuelven JSON determinista. Ninguna acepta SurrealQL ni entrega claves del almacén.
+Devuelven JSON determinista. Ninguna acepta SurrealQL ni entrega claves internas.
 """
 
 from __future__ import annotations
@@ -14,21 +14,11 @@ from argos.core.analysis import EntityHistory
 from argos.core.model import EntityKind
 from argos.usecases import tools as ops
 from argos.usecases.deps import Bookkeeping
-from argos.usecases.tools import (
-    CaseContext,
-    ChunkPage,
-    JobStatus,
-    ManifestView,
-    RegistryMatch,
-    ToolCaller,
-    ToolDenied,
-)
+from argos.usecases.tools import CaseContext, RegistryMatch, ToolCaller, ToolDenied
 
 type NoInput = Callable[[], Awaitable[str]]
-type OneInput = Callable[[str], Awaitable[str]]
 type TwoInputs = Callable[[str, str], Awaitable[str]]
-type TextAndNumber = Callable[[str, int], Awaitable[str]]
-type AgentTool = NoInput | OneInput | TwoInputs | TextAndNumber
+type AgentTool = NoInput | TwoInputs
 
 UNKNOWN_KIND = "entity.unknown_kind"
 
@@ -53,8 +43,6 @@ def case_context_payload(context: CaseContext) -> dict[str, object]:
         "case_id": context.case_id,
         "state": str(context.state),
         "language": context.language,
-        "document_ids": list(context.document_ids),
-        "extraction_ids": list(context.extraction_ids),
         "verdict": None
         if verdict is None
         else {
@@ -65,48 +53,6 @@ def case_context_payload(context: CaseContext) -> dict[str, object]:
             "actions": list(verdict.actions),
             "missing": list(verdict.missing),
         },
-    }
-
-
-def job_payload(status: JobStatus) -> dict[str, object]:
-    return {
-        "job_id": status.job_id,
-        "type": str(status.type),
-        "state": str(status.state),
-        "attempt": status.attempt,
-        "public_error": status.public_error,
-        "document_id": status.document_id,
-    }
-
-
-def manifest_payload(manifest: ManifestView) -> dict[str, object]:
-    return {
-        "extraction_id": manifest.extraction_id,
-        "document_id": manifest.document_id,
-        "page_count": manifest.page_count,
-        "ocr_pages": manifest.ocr_pages,
-        "extractor_version": manifest.extractor_version,
-        "pages": [
-            {"page": page.page, "chunks": page.chunks, "characters": page.characters}
-            for page in manifest.pages
-        ],
-        "chunk_ids": list(manifest.chunk_ids),
-    }
-
-
-def chunks_payload(page: ChunkPage) -> dict[str, object]:
-    return {
-        "extraction_id": page.extraction_id,
-        "cursor": page.cursor,
-        "chunks": [
-            {
-                "chunk_id": chunk.chunk_id,
-                "page": chunk.page,
-                "position": chunk.position,
-                "text": chunk.text,
-            }
-            for chunk in page.chunks
-        ],
     }
 
 
@@ -146,37 +92,14 @@ def _kind_of(raw: str) -> EntityKind | None:
 
 def tools_for(services: Bookkeeping, caller: ToolCaller) -> list[BoundTool]:
     async def get_case_context() -> str:
-        """Devuelve el estado del caso, sus documentos, extracciones y veredicto vigente."""
+        """Devuelve el estado del caso y su veredicto vigente."""
         result = await ops.get_case_context(services, caller)
         if isinstance(result, ToolDenied):
             return denial(result)
         return dumps(case_context_payload(result))
 
-    async def get_document_job(job_id: str) -> str:
-        """Devuelve el estado público de un trabajo de documento del caso."""
-        result = await ops.get_document_job(services, caller, job_id=job_id)
-        if isinstance(result, ToolDenied):
-            return denial(result)
-        return dumps(job_payload(result))
-
-    async def get_extraction_manifest(extraction_id: str) -> str:
-        """Devuelve la estructura de una extracción: páginas, tamaños y fragmentos."""
-        result = await ops.get_extraction_manifest(services, caller, extraction_id=extraction_id)
-        if isinstance(result, ToolDenied):
-            return denial(result)
-        return dumps(manifest_payload(result))
-
-    async def get_extraction_chunks(extraction_id: str, cursor: int = 0) -> str:
-        """Devuelve una página de fragmentos autorizados de la extracción."""
-        result = await ops.get_extraction_chunks(
-            services, caller, extraction_id=extraction_id, cursor=cursor
-        )
-        if isinstance(result, ToolDenied):
-            return denial(result)
-        return dumps(chunks_payload(result))
-
     async def find_registry_matches(kind: str, value: str) -> str:
-        """Busca advertencias oficiales vigentes sobre un identificador."""
+        """Busca advertencias oficiales sobre un identificador."""
         entity_kind = _kind_of(kind)
         if entity_kind is None:
             return dumps({"error": UNKNOWN_KIND})
@@ -197,9 +120,6 @@ def tools_for(services: Bookkeeping, caller: ToolCaller) -> list[BoundTool]:
 
     catalog: tuple[BoundTool, ...] = (
         BoundTool(Capability.GET_CASE_CONTEXT, get_case_context),
-        BoundTool(Capability.GET_DOCUMENT_JOB, get_document_job),
-        BoundTool(Capability.GET_EXTRACTION_MANIFEST, get_extraction_manifest),
-        BoundTool(Capability.GET_EXTRACTION_CHUNKS, get_extraction_chunks),
         BoundTool(Capability.FIND_REGISTRY_MATCHES, find_registry_matches),
         BoundTool(Capability.FIND_ENTITY_HISTORY, find_entity_history),
     )

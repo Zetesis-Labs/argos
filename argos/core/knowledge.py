@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
-from argos.core.analysis import normalized_identifier
+from argos.core.identifiers import normalized_identifier
 from argos.core.model import EntityKind, OfficialWarning
 
 GRAPH_SCHEMA = "okf-graph/v1"

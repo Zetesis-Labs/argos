@@ -1,7 +1,7 @@
-"""Clúster de Agno: especialistas, `investigation_team` y redactor (constitución §8).
+"""Agentes de Agno: dos investigadores, el redactor y el conversacional.
 
-Aquí no vive ninguna regla de negocio. El nivel lo calcula `core.score` y las
-transiciones el workflow; estos agentes interpretan, consultan y redactan.
+Aquí no vive ninguna regla de negocio. El nivel lo calcula `core.analysis.score`
+y las transiciones el caso de uso; estos agentes interpretan y redactan.
 """
 
 from __future__ import annotations
@@ -12,11 +12,10 @@ from dataclasses import dataclass
 from agno.agent import Agent
 from agno.db.base import BaseDb
 from agno.models.openai import OpenAIChat
-from agno.team import Team
 
 from argos.agents.tools import tools_for
 from argos.config import Settings
-from argos.core.agents import INVESTIGATION_TEAM, AgentName
+from argos.core.agents import INVESTIGATORS, AgentName
 from argos.core.model import Analysis
 from argos.core.ports import CaseBrief, ConversationBrief, Investigation, VerdictBrief
 from argos.core.reports import (
@@ -34,29 +33,17 @@ from argos.usecases.tools import ToolCaller
 
 ANALYSIS_OF_AGENT: Mapping[AgentName, Analysis] = {
     AgentName.TRIAGE: Analysis.TRIAGE,
-    AgentName.REGISTRIES: Analysis.REGISTRIES,
-    AgentName.DOMAIN: Analysis.DOMAIN,
     AgentName.PATTERNS: Analysis.PATTERNS,
-    AgentName.MEMORY: Analysis.MEMORY,
-    AgentName.DOCUMENT: Analysis.DOCUMENT,
 }
 
 ROLES: Mapping[AgentName, str] = {
-    AgentName.TRIAGE: ("Normalizas identificadores del aviso y propones tipologías. No puntúas."),
-    AgentName.REGISTRIES: (
-        "Buscas coincidencias con advertencias oficiales vigentes, clones incluidos."
-    ),
-    AgentName.DOMAIN: (
-        "Valoras registro, certificado, reputación y parecido con marcas de un dominio."
+    AgentName.TRIAGE: (
+        "Interpretas de qué va el aviso, qué tipología de fraude sugiere y qué "
+        "identificadores lo sostienen. No puntúas."
     ),
     AgentName.PATTERNS: (
-        "Detectas técnicas de manipulación y siempre citas el fragmento que las sostiene."
-    ),
-    AgentName.MEMORY: (
-        "Consultas reincidencias por identificador y solo manejas agregados de la memoria."
-    ),
-    AgentName.DOCUMENT: (
-        "Lees el estado del documento, su manifiesto y sus fragmentos autorizados."
+        "Detectas técnicas de manipulación y siempre citas el fragmento literal "
+        "del aviso que las sostiene."
     ),
     AgentName.VERDICT_WRITER: (
         "Explicas un nivel ya calculado con sus indicios. No puedes cambiarlo."
@@ -69,19 +56,13 @@ ROLES: Mapping[AgentName, str] = {
 COMMON_RULES = (
     "Habla de indicios y coincidencias: nunca afirmes que algo es una estafa ni "
     "señales a una persona física.",
-    "No inventes evidencia: toda señal necesita fuente, fecha, valor y cita.",
+    "No inventes evidencia: toda señal necesita fuente, fecha, valor y cita literal.",
+    "No declares advertencias oficiales ni reincidencias: eso lo comprueba el sistema.",
     "Usa solo tus herramientas. No pides ni recibes credenciales ni consultas libres.",
 )
 
-TEAM_NAME = "investigation_team"
-TEAM_INSTRUCTIONS = (
-    "Coordinas a los especialistas de investigación de un caso de posible fraude.",
-    "Reparte el trabajo, reúne sus señales y responde con el JSON del contrato.",
-    "No calcules ningún nivel de riesgo: eso es del núcleo determinista.",
-)
 
-
-def build_specialist(
+def build_agent(
     agent: AgentName,
     *,
     model: OpenAIChat,
@@ -98,65 +79,53 @@ def build_specialist(
         model=model,
         tools=[bound.call for bound in tools_for(services, caller)],
         db=db,
-        # R8: la sesión guarda referencias, no los fragmentos que viajan en las
-        # respuestas de herramienta.
         store_tool_messages=False,
         telemetry=False,
     )
 
 
-def build_specialists(
-    members: Sequence[AgentName],
-    *,
-    model: OpenAIChat,
-    services: Bookkeeping,
-    tenant_id: str,
-    case_id: str,
-    db: BaseDb | None,
-) -> tuple[Agent, ...]:
-    return tuple(
-        build_specialist(
-            member, model=model, services=services, tenant_id=tenant_id, case_id=case_id, db=db
+class SequentialInvestigator:
+    """Sin equipo: cada especialista responde su contrato y el núcleo une lo sostenido."""
+
+    def __init__(self, agents: Mapping[AgentName, Agent], *, user_id: str) -> None:
+        self._agents = dict(agents)
+        self._user_id = user_id
+
+    async def investigate(self, brief: CaseBrief) -> Investigation:
+        merged = Investigation(signals=(), entities=(), missing=())
+        for name, agent in self._agents.items():
+            answer = await run_text(
+                agent,
+                investigation_prompt(brief),
+                user_id=self._user_id,
+                session_id=f"case-{brief.case_id}",
+            )
+            reported = parse_investigation(answer, expected=(ANALYSIS_OF_AGENT[name],))
+            merged = Investigation(
+                signals=merged.signals + reported.signals,
+                entities=merged.entities + reported.entities,
+                missing=merged.missing + reported.missing,
+            )
+        return Investigation(
+            signals=merged.signals,
+            entities=merged.entities,
+            missing=tuple(dict.fromkeys(merged.missing)),
         )
-        for member in members
-    )
 
 
-def build_team(specialists: Sequence[Agent], *, model: OpenAIChat, db: BaseDb | None) -> Team:
-    return Team(
-        name=TEAM_NAME,
-        members=list(specialists),
-        instructions=list(TEAM_INSTRUCTIONS),
-        model=model,
-        db=db,
-        store_tool_messages=False,
-        telemetry=False,
-    )
+class AgentNarrator:
+    def __init__(self, writer: Agent, *, user_id: str) -> None:
+        self._writer = writer
+        self._user_id = user_id
 
-
-def build_writer(*, model: OpenAIChat, db: BaseDb | None) -> Agent:
-    return Agent(
-        name=str(AgentName.VERDICT_WRITER),
-        role=ROLES[AgentName.VERDICT_WRITER],
-        instructions=list(COMMON_RULES),
-        model=model,
-        db=db,
-        store_tool_messages=False,
-        telemetry=False,
-    )
-
-
-def build_conversation(
-    *, model: OpenAIChat, services: Bookkeeping, tenant_id: str, case_id: str, db: BaseDb | None
-) -> Agent:
-    return build_specialist(
-        AgentName.CONVERSATION,
-        model=model,
-        services=services,
-        tenant_id=tenant_id,
-        case_id=case_id,
-        db=db,
-    )
+    async def narrate(self, brief: VerdictBrief) -> str:
+        answer = await run_text(
+            self._writer,
+            verdict_prompt(brief),
+            user_id=self._user_id,
+            session_id=f"case-{brief.case_id}",
+        )
+        return answer.strip() or fallback_summary(brief)
 
 
 class AgentAdvisor:
@@ -183,50 +152,23 @@ def build_advisor(
     db: BaseDb | None = None,
 ) -> AgentAdvisor:
     return AgentAdvisor(
-        build_conversation(
-            model=model, services=services, tenant_id=tenant_id, case_id=case_id, db=db
+        build_agent(
+            AgentName.CONVERSATION,
+            model=model,
+            services=services,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            db=db,
         ),
         user_id=tenant_id,
     )
 
 
-class TeamInvestigator:
-    def __init__(self, team: Team, *, expected: Sequence[Analysis], user_id: str) -> None:
-        self._team = team
-        self._expected = tuple(expected)
-        self._user_id = user_id
-
-    async def investigate(self, brief: CaseBrief) -> Investigation:
-        answer = await run_text(
-            self._team,
-            investigation_prompt(brief),
-            user_id=self._user_id,
-            session_id=f"case-{brief.case_id}",
-        )
-        return parse_investigation(answer, expected=self._expected)
-
-
-class AgentNarrator:
-    def __init__(self, writer: Agent, *, user_id: str) -> None:
-        self._writer = writer
-        self._user_id = user_id
-
-    async def narrate(self, brief: VerdictBrief) -> str:
-        answer = await run_text(
-            self._writer,
-            verdict_prompt(brief),
-            user_id=self._user_id,
-            session_id=f"case-{brief.case_id}",
-        )
-        return answer.strip() or fallback_summary(brief)
-
-
 @dataclass(frozen=True)
 class AgentCluster:
-    team: Team
     specialists: tuple[Agent, ...]
     writer: Agent
-    investigator: TeamInvestigator
+    investigator: SequentialInvestigator
     narrator: AgentNarrator
     model: OpenAIChat
 
@@ -241,23 +183,27 @@ def build_cluster(
     tenant_id: str,
     case_id: str,
     db: BaseDb | None = None,
-    members: Sequence[AgentName] = INVESTIGATION_TEAM,
+    members: Sequence[AgentName] = INVESTIGATORS,
 ) -> AgentCluster:
     model = build_model(settings, settings.analysis_model)
-    specialists = build_specialists(
-        members, model=model, services=services, tenant_id=tenant_id, case_id=case_id, db=db
+    specialists = {
+        member: build_agent(
+            member, model=model, services=services, tenant_id=tenant_id, case_id=case_id, db=db
+        )
+        for member in members
+    }
+    writer = build_agent(
+        AgentName.VERDICT_WRITER,
+        model=model,
+        services=services,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        db=db,
     )
-    team = build_team(specialists, model=model, db=db)
-    writer = build_writer(model=model, db=db)
     return AgentCluster(
-        team=team,
-        specialists=specialists,
+        specialists=tuple(specialists.values()),
         writer=writer,
-        investigator=TeamInvestigator(
-            team,
-            expected=[ANALYSIS_OF_AGENT[member] for member in members],
-            user_id=tenant_id,
-        ),
+        investigator=SequentialInvestigator(specialists, user_id=tenant_id),
         narrator=AgentNarrator(writer, user_id=tenant_id),
         model=model,
     )
