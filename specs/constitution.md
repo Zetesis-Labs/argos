@@ -9,10 +9,15 @@ Argos analiza avisos relacionados con posibles fraudes financieros y devuelve un
 veredicto explicado con evidencias. Se ejecuta como un servicio con memoria
 operacional compartida y agentes especializados de apoyo.
 
-Argos es hoy una prueba de concepto deliberadamente pequeña: un solo proceso, un
-aviso de texto y el catálogo curado. Las secciones que describen documentos,
-cola durable y almacén de objetos fijan cómo se harán esas piezas cuando el
-producto las necesite; hasta entonces no existen en el código.
+**Argos se distribuye como un devcontainer que alguien se baja y ejecuta en su
+propia máquina.** Hay un solo usuario: quien lo arranca. Todo lo que dé por
+supuesto que Argos es un servicio compartido —clientes, credenciales, roles,
+aislamiento entre organizaciones— contradice el producto y sobra.
+
+Es además una prueba de concepto deliberadamente pequeña: un aviso de texto y el
+catálogo curado. Las secciones que describen documentos, cola durable y almacén
+de objetos fijan cómo se harán esas piezas cuando el producto las necesite;
+hasta entonces no existen en el código.
 
 ## 1. Idioma
 
@@ -78,14 +83,14 @@ producto las necesite; hasta entonces no existen en el código.
 
 ## 6. Propiedad, privacidad y ciclo de vida de los datos
 
-- La jerarquía de propiedad es `tenant → case`, y `case → document →
-  extraction → chunk` cuando existan documentos. Los datos nunca pertenecen al
-  agente ni al proceso que los creó.
-- Las entidades del presunto actor y sus vínculos son memoria compartida entre
-  tenants: un mismo dominio, IBAN o wallet es un solo nodo del grafo. Los casos
-  que lo citan siguen siendo del tenant. Un tenant recibe de la memoria solo
-  agregados (en cuántos casos y desde cuándo se vio, si alguno está
-  confirmado); nunca identificadores, citas ni tenant de casos ajenos.
+- Todo lo que Argos guarda pertenece a quien lo ejecuta y no sale de su máquina.
+  La jerarquía es `case → document → extraction → chunk` cuando existan
+  documentos. Los datos nunca pertenecen al agente ni al proceso que los creó.
+- Las entidades del presunto actor y sus vínculos son memoria entre casos: un
+  mismo dominio, IBAN o wallet es un solo nodo del grafo y sobrevive al caso que
+  lo descubrió. La memoria se consulta como agregado —en cuántos casos y desde
+  cuándo se vio, si alguno está confirmado— porque es lo útil para decidir, no
+  porque haya de quién protegerlo.
 - El aviso se persiste en su caso con su hash, sus identificadores, sus señales
   con la evidencia mínima y sus vínculos: sin el texto no hay nada que analizar
   ni forma de reproducir un veredicto. Caduca con el caso y no se copia a una
@@ -95,16 +100,17 @@ producto las necesite; hasta entonces no existen en el código.
   almacén de objetos; nunca se copiarán a una sesión de Agno. Su metadato y sus
   referencias viven en el caso.
 - La conversación posterior vive en la sesión de Agno y caduca. La sesión solo
-  conserva referencias como `tenant_id`, `case_id`, `job_id`, `document_id` y
-  `extraction_id`; no es la fuente de verdad del caso.
-- El acceso se concede por identidad de servicio y mínimo privilegio. No se
-  comparten credenciales entre agentes, workers y runtime en producción.
-- El curador opera el despliegue completo, no un tenant. Sus acciones cruzan
-  tenants y cada una queda atribuida y fechada.
-- Ningún aviso, documento, señal ni identificador privado de un consultante
-  entra en el repositorio. El catálogo podrá contener advertencias regulatorias
-  públicas aceptadas por el curador; mientras no se implemente esa ingesta, todo
-  su contenido es sintético.
+  conserva referencias como `case_id`, `document_id` y `extraction_id`; no es la
+  fuente de verdad del caso.
+- Argos no autentica a nadie: escucha en loopback dentro del contenedor de su
+  usuario. El mínimo privilegio sigue aplicando hacia dentro —el proceso entra
+  en SurrealDB con su usuario y el de los agentes es de solo lectura— porque
+  limita lo que un prompt puede provocar, no lo que un intruso puede leer.
+- Nada caduca solo. Un análisis local se guarda hasta que su dueño lo borra.
+- Ningún aviso, documento, señal ni identificador de un caso entra en el
+  repositorio. El catálogo podrá contener advertencias regulatorias públicas
+  aceptadas por quien mantiene la distribución; mientras no se implemente esa
+  ingesta, todo su contenido es sintético.
 
 ## 7. SurrealDB como verdad operacional
 
@@ -115,8 +121,8 @@ producto las necesite; hasta entonces no existen en el código.
   proyección del catálogo. No almacena binarios ni copias completas de
   artefactos grandes.
 - Un agente accede a `argos/ops` solo mediante herramientas acotadas por su
-  capacidad, su tenant y su caso. Nunca recibe SurrealQL general por comodidad,
-  ni por una herramienta propia ni por el MCP de SurrealDB.
+  capacidad y su caso. Nunca recibe SurrealQL general por comodidad, ni por una
+  herramienta propia ni por el MCP de SurrealDB.
 - El proceso entra con su propia identidad de base de datos y permisos mínimos.
   La de los agentes es de solo lectura. Root se reserva al bootstrap.
 - El esquema vive en `db/schema.surql`, es idempotente (`IF NOT EXISTS`,
@@ -138,9 +144,9 @@ producto las necesite; hasta entonces no existen en el código.
 - El clúster actual es `triage_agent`, `patterns_agent`, `verdict_writer` y
   `conversation_agent`. Coordinarlos es código: no hay equipo ni workflow de
   Agno mientras dos agentes basten.
-- Se publican solo capacidades estables y autorizadas: analizar un aviso,
-  recuperar un caso y conversar sobre él. Los especialistas no tienen entrada
-  pública ni tarjeta de agente.
+- La superficie principal es la terminal: `argos` analiza, muestra, pregunta y
+  revisa. La API HTTP local sirve las mismas capacidades para lo que venga
+  después. Los especialistas no tienen entrada propia ni tarjeta de agente.
 - Cuando un trabajo deje de caber en la llamada, la respuesta devolverá
   identificadores y estado en lugar de mantener la conexión abierta.
 - Cada agente recibe solo las herramientas de su cometido. Compartir SurrealDB
@@ -195,9 +201,10 @@ producto las necesite; hasta entonces no existen en el código.
 - Argos no despliega hoy backend de trazas: la observabilidad es el libro
   operacional y lo que LiteLLM registra. Cuando se añada uno, será por
   OpenTelemetry y bajo la regla siguiente.
-- Lo que sale a un log, una traza o un error público no contiene el aviso,
-  documentos, secretos ni datos personales: identificadores y códigos del
-  catálogo. La sesión de Agno guarda referencias, no contenido.
+- Un error se muestra entero, con su tipo y su mensaje: el destinatario es quien
+  ejecuta Argos y esconderle el motivo solo le impide arreglarlo. Lo que no entra
+  en un log ni en una traza son secretos y el contenido del aviso. La sesión de
+  Agno guarda referencias, no contenido.
 - Los tests corren contra el modelo `mock` de LiteLLM o contra fakes. Ningún
   test gasta dinero por defecto.
 
@@ -241,8 +248,8 @@ producto las necesite; hasta entonces no existen en el código.
   oculto de analizar un caso.
 - Un catálogo federado se fija a una revisión inmutable y se materializa antes
   de analizar; la federación no crea una dependencia remota del runtime.
-- Casos, documentos, señales privadas, revisiones de casos y datos de tenants no
-  forman parte del catálogo de conocimiento.
+- Casos, documentos, señales y revisiones no forman parte del catálogo de
+  conocimiento.
 
 ## 14. Higiene
 
