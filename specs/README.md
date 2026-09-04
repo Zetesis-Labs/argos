@@ -35,23 +35,28 @@ el código.
 | Spec | Vertical | Fase | Cubre |
 |---|---|---|---|
 | [funcional](argos/veredicto/functional-specs.md) | Veredicto de avisos y documentos (iniciativa v1) | todas | W1–W5, R1–R29 |
+| [conocimiento](argos/conocimiento/functional-specs.md) | Catálogo curado, exploración y proyección local | todas | W1–W4, R1–R14 |
 | [S01](S01-plataforma.md) | Base verificada: SurrealDB/MCP, LiteLLM y Langfuse | 0 | constitución §2, §7, §11–§12 |
 | [S02](S02-agentos-workers.md) | AgentOS, A2A, NATS, RustFS y worker de documentos | 1 | W1, W2, W5; R1, R8, R9, R12, R15–R29; constitución §3–§12 |
+| [S03](S03-conocimiento-okf.md) | Fundación OKF en Git, explorador y proyección SurrealDB | 2 | conocimiento W1–W3, R1–R12 y R14 |
 
 S01 y S02 están implementadas y verificadas. S02 tiene 55 casos anclados; los
 últimos cargan advertencias exclusivamente sintéticas para demostrar la consulta
 de registros sin adelantar la ingesta real de S07 y arrancan todos los procesos
 desde el perfil local `services`.
 
+S03 está en implementación y sustituye el fixture usado por S02.54 como fuente
+de arranque por un corpus OKF sintético y versionado.
+
 Fases previstas (una spec técnica por vertical, se crean al empezar la fase):
 
 | Fase | Vertical | Spec prevista |
 |---|---|---|
 | 1 | AgentOS y clúster de agentes: A2A, NATS, RustFS y worker de documentos | S02 (implementada) |
-| 2 | URL a veredicto: análisis de dominio, puntuación, redactor, servicio | S03 identificadores, S04 dominio, S05 puntuación, S06 veredicto |
-| 3 | Registros oficiales: ingesta CNMV e I-SCAN, consulta FCA, cadena de clones | S07 fuentes |
-| 4 | Memoria y revisión: grafo compartido de entidades, vínculos `same_actor`, casos previos, revisión del curador (W4, R10, R13, R29) y exploración de la memoria | S08 memoria y revisión |
-| 5 | Captura de pantalla y canal Telegram | S09 multimodal, S10 canales |
+| 2 | Fundación de conocimiento y URL a veredicto | S03 conocimiento, S04 identificadores, S05 dominio, S06 puntuación, S07 veredicto |
+| 3 | Registros oficiales: ingesta CNMV e I-SCAN, consulta FCA, cadena de clones | S08 fuentes |
+| 4 | Memoria y revisión: grafo compartido de entidades, vínculos `same_actor`, casos previos, revisión del curador (W4, R10, R13, R29) y exploración de la memoria | S09 memoria y revisión |
+| 5 | Captura de pantalla y canal Telegram | S10 multimodal, S11 canales |
 
 ## Decisiones de dirección
 

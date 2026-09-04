@@ -1040,16 +1040,15 @@ Por eso la comprobación mira la fila, no el código de respuesta.
   servicio recibe 403 y las métricas no contienen identificadores de caso ni
   contenido (S02 §13; R16)
 
-## S02.54 Las advertencias sintéticas de demostración se cargan de forma idempotente
+## S02.54 El catálogo sintético demuestra la consulta de registros
 
-- Dado un fixture de advertencias exclusivamente sintéticas con identificadores
+- Dado el catálogo de demostración exclusivamente sintético con identificadores
   estables, regulador, URL de origen, entidad, estado y fecha de captura
-- Cuando el operador ejecuta `seed-demo-warnings` dos veces
-- Entonces cada advertencia existe una sola vez en `warning`, las filas ya
-  iguales no se reescriben, una consulta del agente de registros devuelve la
-  coincidencia vigente con su regulador, URL y fecha, y una advertencia sin los
-  metadatos exigidos por R11 se rechaza antes de escribir (R3, R11, R17;
-  constitución §6, §13)
+- Cuando sus advertencias se proyectan y el agente de registros consulta un
+  dominio incluido
+- Entonces devuelve la coincidencia vigente con su regulador, URL y fecha y no
+  presenta como vigente una advertencia retirada (R3, R11, R17; constitución
+  §6, §13)
 
 ## S02.55 El perfil de servicios prepara y ejecuta Argos sin pasos manuales
 
@@ -1058,8 +1057,8 @@ Por eso la comprobación mira la fila, no el código de respuesta.
 - Cuando el operador ejecuta `docker compose -f .devcontainer/docker-compose.yml
   --profile services up -d --build`
 - Entonces una preparación idempotente sincroniza las dependencias bloqueadas,
-  aplica el esquema, declara JetStream, crea el bucket y carga el conocimiento
-  sintético versionado antes de arrancar `gateway`, `dispatcher`, `worker`,
+  aplica el esquema, declara JetStream, crea el bucket y proyecta el conocimiento
+  sintético versionado servido por OKF antes de arrancar `gateway`, `dispatcher`, `worker`,
   `resumer`, `analyzer` y `janitor` como procesos independientes; el gateway usa
   el modelo `mock` por defecto y su único puerto publicado escucha en loopback;
   SurrealDB y NATS reservados para tests evitan que esos procesos consuman o
