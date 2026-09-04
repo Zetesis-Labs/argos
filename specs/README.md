@@ -37,7 +37,7 @@ el código.
 | [funcional](argos/veredicto/functional-specs.md) | Veredicto de avisos y documentos (iniciativa v1) | W1–W5, R1–R29 |
 | [conocimiento](argos/conocimiento/functional-specs.md) | Catálogo curado, exploración y proyección local | W1–W4, R1–R14 |
 | [S01](S01-plataforma.md) | Base verificada: SurrealDB/MCP y LiteLLM | constitución §2, §7, §11–§12 |
-| [S02](S02-nucleo-y-agentes.md) | Caso, identificadores, señales por código, agentes y gateway | W1, W2; R1–R9, R15, R16, R28, R29; constitución §3–§8, §11–§12 |
+| [S02](S02-nucleo-y-agentes.md) | Caso, identificadores, señales por código, agentes, CLI y API local | W1, W2, W4; R1–R9, R13, R15, R29; constitución §3–§8, §11–§12 |
 | [S03](S03-conocimiento-okf.md) | Fundación OKF en Git, explorador y proyección SurrealDB | conocimiento W1–W3, R1–R12 y R14 |
 
 S01, S02 y S03 están implementadas y verificadas. W5 —documentos— pertenece al
@@ -65,10 +65,15 @@ entró en S02 al hacerla honesta:
 |---|---|
 | S04 identificadores | S02.56: extracción y normalización por código puro |
 | S07 veredicto | S02.28, S02.29, S02.35 y S02.36: nivel, degradación, acciones y cierre |
-| parte de S09 memoria | S02.33 y S02.57: entidad compartida, agregados y señal de reincidencia |
+| parte de S09 memoria | S02.33, S02.57 y S02.60: entidad entre casos, agregados y reincidencia |
+| revisión de casos (W4, R13) | S02.60: `argos review`, que es lo que hace visible la reincidencia |
 
 Reconocer un IBAN o componer un veredicto no necesitaba una fase propia. Lo que
 sí la necesita es medir si la escalera acierta.
+
+Y desapareció una dimensión entera: la multitenencia. Argos se distribuye como
+un devcontainer con un solo usuario, así que tenants, credenciales, roles y
+aislamiento entre clientes no eran alcance pendiente sino trabajo hecho de más.
 
 ## Lo que queda, por lo que de verdad bloquea
 
@@ -78,11 +83,10 @@ emita un veredicto útil, no por dependencia técnica.
 | Orden | Vertical | Spec | Por qué va aquí |
 |---|---|---|---|
 | 1 | Fuentes oficiales: ingesta CNMV e I-SCAN, consulta FCA, cadena de clones | S08 | El catálogo tiene tres advertencias sintéticas. Un aviso que no cite `example-broker.test` sale `undetermined` o `low`, y ninguna otra vertical arregla eso |
-| 2 | Revisión del curador: marcar confirmado y falso positivo (W4, R13) | S09a | Nada escribe `review_state`. Sin ella `history.confirmed` nunca es cierto y la reincidencia, uno de los dos caminos a `critical`, es inalcanzable |
-| 3 | Calibración de R4 contra avisos reales etiquetados | S06 | La escalera se diseñó sobre el papel y no se ha medido nunca. Sin 1 y 2 no hay nada que medir |
-| 4 | Dominio: registro, certificado, reputación y parecido con marcas | S05 | Aporta señales propias; hasta ahora solo hay triaje y patrones, y dos señales fuertes del mismo análisis no pasan de `medium` |
-| 5 | Vínculos `same_actor` y exploración de la memoria (R10, R29) | S09b | Amplía la reincidencia más allá del identificador exacto |
-| 6 | Captura de pantalla y canal Telegram | S10, S11 | Entrada nueva, no mejor veredicto |
+| 2 | Calibración de R4 contra avisos reales etiquetados | S06 | La escalera se diseñó sobre el papel y no se ha medido nunca. Sin 1 no hay nada que medir |
+| 3 | Dominio: registro, certificado, reputación y parecido con marcas | S05 | Aporta señales propias; hasta ahora solo hay triaje y patrones, y dos señales fuertes del mismo análisis no pasan de `medium` |
+| 4 | Vínculos `same_actor` y exploración de la memoria (R10, R29) | S09 | Amplía la reincidencia más allá del identificador exacto |
+| 5 | Captura de pantalla y canal Telegram | S10, S11 | Entrada nueva, no mejor veredicto |
 | — | Documentos PDF y trabajo durable | recuperar `specs/parked/S02-pipeline-asincrono.md` | Cuando una entrada deje de caber en la llamada |
 
 Las fases numeradas del plan anterior desaparecen: eran cinco tramos fijos y el

@@ -176,7 +176,7 @@ conserva la última proyección válida.
   vecindario. El grafo completo es una vista opcional, no la pantalla inicial.
 - **R11 · Privacidad.** El corpus puede contener conocimiento regulatorio
   público, pero nunca avisos, documentos, señales ni identificadores privados
-  de consultantes o tenants.
+  de los casos analizados.
 - **R12 · Ejecución local.** Arrancar y consultar conocimiento durante un
   análisis no requiere red, servicios externos ni construir el explorador.
 - **R13 · Federación fijada.** Un subgrafo remoto siempre se fija a una revisión

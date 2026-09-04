@@ -3,9 +3,13 @@
 **Estado**: implementada. Sustituye a la vertical asíncrona, aparcada en
 `specs/parked/S02-pipeline-asincrono.md` y conservada en el tag `s02-async`.
 
-Esta vertical convierte la base S01 en un servicio que recibe un aviso, lo
-analiza dentro de la llamada y devuelve un veredicto explicado. Cubre W1 y W2;
-R1–R9, R15, R16, R28 y R29; y la constitución §3–§8, §11–§12.
+Esta vertical convierte la base S01 en una herramienta local que recibe un
+aviso, lo analiza dentro de la llamada y devuelve un veredicto explicado. Cubre
+W1, W2 y W4; R1–R9, R13, R15 y R29; y la constitución §3–§8, §11–§12.
+
+Argos se distribuye como un devcontainer que alguien se baja y ejecuta en su
+máquina. Hay un solo usuario: quien lo arranca. No hay tenants, no hay
+credenciales, no hay roles y no hay errores que ocultar a un llamante.
 
 Los números `Sxx.n` que sobreviven de la vertical aparcada conservan su
 significado y su test. Los que describían el pipeline asíncrono no se reasignan:
@@ -16,16 +20,18 @@ mismo comportamiento entre las dos versiones del documento.
 
 S02 debe proporcionar:
 
-- un gateway HTTP con tres capacidades: analizar un aviso, consultar un caso y
-  preguntar sobre su veredicto;
+- una CLI como superficie principal y una API HTTP local debajo, con cuatro
+  capacidades: analizar un aviso, consultar un caso con su evidencia, preguntar
+  sobre su veredicto y marcarlo confirmado o falso positivo;
 - extracción y normalización de identificadores del aviso por código puro;
 - señales decisivas —advertencia oficial vigente y reincidencia confirmada—
   derivadas del catálogo y de la memoria, nunca de un modelo;
 - agentes de apoyo que interpretan y redactan, con herramientas acotadas por
   capacidad, tenant y caso;
 - un núcleo determinista que puntúa, compone y gobierna las transiciones;
-- memoria de entidades compartida entre tenants que solo expone agregados;
-- autorización por tenant y errores públicos que no filtran nada.
+- memoria de entidades entre casos que expone agregados;
+- un fallo que deja el caso operable con su error real y un presupuesto de
+  tiempo que se cumple.
 
 S02 **no** implementa documentos, cola durable, almacén de objetos, ingesta de
 fuentes oficiales, revisión del curador ni análisis de dominio. Un aviso que
@@ -41,11 +47,12 @@ advertencia oficial vigente. Lo desbloquea la vertical de revisión.
 ## 2. Topología
 
 ```text
-                       POST /v1/notices
-                              │
-                     ┌────────▼────────┐
-                     │  gateway HTTP   │
-                     └────────┬────────┘
+            argos analyze "…"        POST /v1/notices
+                     │                      │
+                     └──────────┬───────────┘
+                          ┌─────▼─────┐
+                          │  cableado │
+                          └─────┬─────┘
                               │
               ┌───────────────▼───────────────┐
               │ core: identificadores, score, │
@@ -71,7 +78,9 @@ sin equipo de Agno: coordinar dos especialistas es un bucle.
 | `argos/usecases` | Abre el caso, reúne señales, cierra el veredicto, responde |
 | `argos/agents` | Declara los agentes y sus herramientas |
 | `argos/platform` | SurrealDB, LiteLLM, reloj, identificadores, catálogo |
-| `argos/api` | Autentica, deriva el tenant y serializa estado |
+| `argos/api` | Serializa estado sobre HTTP |
+| `argos/cli` | Superficie principal: analiza, muestra, pregunta y revisa |
+| `argos/wiring` | Cableado único que comparten la CLI y el API |
 
 ## 4. Catálogo de agentes
 
@@ -88,36 +97,49 @@ escribe el código tras consultarlo él mismo.
 
 ## 5. Frontera de la API
 
-| Capacidad | Ruta | Respuesta |
-|---|---|---|
-| `analyze_notice` | `POST /v1/notices` | caso y veredicto, o el código del rechazo |
-| `get_case` | `GET /v1/cases/{case_id}` | estado, error público y veredicto vigente |
-| `ask_case` | `POST /v1/cases/{case_id}/questions` | respuesta apoyada en la evidencia |
+| Capacidad | CLI | Ruta | Respuesta |
+|---|---|---|---|
+| `analyze_notice` | `argos analyze` | `POST /v1/notices` | caso, veredicto y evidencia |
+| `get_case` | `argos show` | `GET /v1/cases/{case_id}` | estado, error y veredicto vigente |
+| `ask_case` | `argos ask` | `POST /v1/cases/{case_id}/questions` | respuesta apoyada en la evidencia |
+| `review_case` | `argos review` | `POST /v1/cases/{case_id}/review` | la marca aplicada |
 
-El tenant sale siempre de la credencial, nunca del cuerpo. No hay tarjeta de
-agente, JSON-RPC ni plano de control: nada de eso tiene consumidor.
+No hay autenticación: el proceso corre en el devcontainer de quien lo usa y
+publica su puerto solo en loopback. Tampoco hay tarjeta de agente, JSON-RPC ni
+plano de control: nada de eso tiene consumidor.
+
+`/health` responde `ok` solo si el libro contesta. Un proceso vivo con la base
+caída responde 503.
 
 ## 6. Modelo operacional en SurrealDB
 
-`argos/ops` contiene `tenant`, `case`, `entity`, `entity_link`, `case_entity`,
-`warning`, `signal`, `verdict` y la proyección del catálogo. `entity`,
-`entity_link` y `warning` son memoria compartida y no llevan `tenant_id`.
+`argos/ops` contiene `case`, `entity`, `entity_link`, `case_entity`, `warning`,
+`signal`, `verdict` y la proyección del catálogo. Ninguna fila lleva `tenant_id`:
+todo pertenece a quien ejecuta Argos.
 
-`case` guarda el texto del aviso y sus enlaces junto a su hash: sin el texto no
-hay análisis, ni explicación, ni forma de reproducir un veredicto. Caduca con el
-caso.
+`case` guarda el texto del aviso y sus enlaces: sin el texto no hay análisis, ni
+explicación, ni forma de reproducir un veredicto. No caduca: un análisis local se
+guarda hasta que su dueño lo borra.
+
+`entity`, `entity_link` y `warning` sobreviven al caso que los descubrió. El
+vínculo `case_entity` es lo que permite ver una reincidencia.
 
 Toda transición es una escritura condicional por revisión dentro de una
 transacción. Pasar a `analyzing` es lo que impide dos análisis simultáneos.
 
+Un aviso repetido abre un caso nuevo. Deduplicar por hash ahorraría un análisis
+y a cambio devolvería un caso muerto durante su ventana: en local no hay coste
+que racionar.
+
 ## 7. Acceso y credenciales
 
-Un usuario de base de datos por workload; hoy solo `gateway`, con rol `EDITOR`.
-El usuario `agent` es `VIEWER` y existe para inspección y para el MCP de
-SurrealDB. Las identidades del pipeline retirado se eliminan explícitamente.
+No hay credenciales de usuario. Lo que sí hay es mínimo privilegio dentro de
+SurrealDB: el proceso entra como `gateway` con rol `EDITOR` y el usuario `agent`
+es `VIEWER`, para inspección y para el MCP. Root se reserva al bootstrap. Las
+identidades del pipeline retirado se eliminan explícitamente.
 
-Las herramientas de un agente comprueban capacidad, tenant y caso antes de leer
-nada, y ninguna acepta SurrealQL libre.
+Las herramientas de un agente comprueban capacidad y caso antes de leer nada, y
+ninguna acepta SurrealQL libre.
 
 ## 8. Identificadores por código
 
@@ -131,7 +153,7 @@ propone el agente y entra siempre como débil.
 
 ## 9. Análisis del aviso
 
-1. El gateway valida el aviso (R1) y deduplica por su hash dentro de la ventana (R9).
+1. Valida el aviso (R1).
 2. Abre el caso con su texto, sus identificadores y sus vínculos en una transacción.
 3. Marca el caso `analyzing` con escritura condicional.
 4. Pregunta a los especialistas y descarta toda señal cuya cita no esté en el aviso.
@@ -139,42 +161,51 @@ propone el agente y entra siempre como débil.
 6. `core.score` calcula el nivel; el redactor lo explica sin poder cambiarlo.
 7. Cierra el caso con su veredicto versionado.
 
-Un fallo en cualquier punto deja el caso `failed` con un código público, nunca
-colgado en `analyzing`.
+Todo ello dentro del presupuesto de R15. Agotarlo, o cualquier otro fallo, deja
+el caso `failed` con su error, nunca colgado en `analyzing`.
 
-## 10. Privacidad y retención
+Después, quien lo usa puede marcar el caso confirmado o falso positivo (W4,
+R13). Esa marca es la única fuente de la reincidencia: sin ella la memoria sabe
+que un identificador se repite, pero no que alguna vez fue fraude.
 
-El aviso vive en su caso y caduca con él. No se copia a la sesión de Agno, que
-guarda referencias. Un tenant recibe de la memoria compartida solo agregados.
-Un error público es un código del catálogo; el detalle se queda en el libro.
+## 10. Privacidad y ciclo de vida
+
+Los datos no salen de la máquina de quien ejecuta Argos. El aviso vive en su
+caso y no se copia a la sesión de Agno, que guarda referencias. La memoria
+devuelve agregados porque es lo útil, no porque haya de quién protegerlos.
+
+Nada caduca solo. Borrar un caso borra sus vínculos, sus señales y sus
+veredictos, y deja intactas las entidades: son memoria entre casos.
 
 ## 11. Observabilidad
 
-`correlation_id` viaja desde la llamada hasta el veredicto. No hay backend de
-trazas desplegado: la observabilidad es el libro y lo que registra LiteLLM.
+No hay backend de trazas: la observabilidad es el libro, la salida de la CLI y
+lo que registra LiteLLM. Un error se muestra tal cual, con su tipo y su mensaje:
+el destinatario es quien ejecuta Argos.
 
 ## 12. Casos anclados
 
-## S02.11 El aviso deja caso e identificadores en una transacción, aplica R1 y deduplica por R9
+## S02.11 El aviso deja caso e identificadores en una transacción y aplica R1
 
 - Dado un aviso con un correo, su dominio y un teléfono
-- Cuando se abre, se repite dentro de la ventana, se envía uno que excede el
-  límite de texto y se envía uno de un tenant desconocido
+- Cuando se abre, se repite, se envía uno que excede el límite de texto y se
+  envía uno vacío
 - Entonces el primero deja el caso en `received` con su texto y con una entidad
-  y un vínculo por identificador normalizado; el repetido devuelve el mismo caso
-  sin escribir; el largo se rechaza con `notice.text_too_long`; y el tenant
-  desconocido con `tenant.unknown` (W1.1–3; R1, R2, R9)
+  y un vínculo por identificador normalizado; el repetido abre un caso nuevo en
+  lugar de devolver el anterior; el largo se rechaza con `notice.text_too_long`;
+  y el vacío con `notice.empty` (W1.1–3; R1, R2)
 
 ## S02.27 El esquema de casos, memoria compartida, señales y veredictos es idempotente
 
 - Dado una SurrealDB con el esquema anterior aplicado
 - Cuando `bootstrap-db` se ejecuta dos veces seguidas
-- Entonces `argos/ops` contiene `tenant`, `case`, `entity`, `entity_link`,
-  `case_entity`, `warning`, `signal` y `verdict`, todas `SCHEMAFULL`; `entity`,
-  `entity_link` y `warning` no tienen campo `tenant_id` y `case_entity` sí;
-  `case` tiene revisión, `notice_text` y `notice_links`; las tablas del pipeline
-  retirado ya no existen; y `schema_version:current` sube a la versión que
-  declara `bootstrap-db` (constitución §6, §7; R8, R29)
+- Entonces `argos/ops` contiene `case`, `entity`, `entity_link`, `case_entity`,
+  `warning`, `signal` y `verdict`, todas `SCHEMAFULL`; ninguna tiene campo
+  `tenant_id` y solo `case_entity`, `signal` y `verdict` llevan `case_id`; `case`
+  tiene `notice_text`, `notice_links`, `review_state` y `error`, y ya no tiene
+  `expires_at`; las tablas del pipeline retirado y `tenant` ya no existen; y
+  `schema_version:current` sube a la versión que declara `bootstrap-db`
+  (constitución §6, §7; R8, R29)
 
 ## S02.28 El núcleo determinista calcula el nivel conforme a R4
 
@@ -203,22 +234,24 @@ trazas desplegado: la observabilidad es el libro y lo que registra LiteLLM.
   `conversation_agent` no puede consultar registros oficiales
   (constitución §4, §8; R16)
 
-## S02.31 Una herramienta rechaza al agente sin capacidad, a otro tenant y a otro caso
+## S02.31 Una herramienta rechaza al agente sin capacidad y al caso inexistente
 
-- Dado un caso abierto de un tenant
-- Cuando `verdict_writer` pide su contexto, un agente de otro tenant lo pide
-  sobre ese caso, y el del propio tenant lo pide sobre un caso inexistente
-- Entonces las tres llamadas se rechazan con `tool.not_authorized`,
-  `case.not_found` y `case.not_found`; ninguna devuelve contenido y ninguna
-  herramienta acepta una consulta SurrealQL libre (R16, R28)
+- Dado un caso abierto
+- Cuando `verdict_writer` pide su contexto, `triage_agent` lo pide sobre un caso
+  inexistente y lo pide sobre el suyo
+- Entonces la primera se rechaza con `tool.not_authorized`, la segunda con
+  `case.not_found`, la tercera devuelve el contexto, y ninguna herramienta
+  acepta una consulta SurrealQL libre (constitución §7)
 
-## S02.33 find_entity_history devuelve al otro tenant solo agregados
+## S02.33 find_entity_history devuelve agregados de la memoria, no los casos
 
-- Dado dos casos del tenant A sobre el mismo dominio, uno marcado `confirmed`
-- Cuando el tenant B pregunta por ese dominio con otra caja y espacios sobrantes
-- Entonces recibe el número de casos, la primera y la última vez que se vio y
-  que existe una revisión confirmada, sin identificadores de caso, citas ni
-  tenants (R29; constitución §6)
+- Dado dos casos sobre el mismo dominio, uno marcado `confirmed`
+- Cuando se pregunta por ese dominio con otra caja y espacios sobrantes, y
+  después por uno que nadie ha visto
+- Entonces el primero devuelve el número de casos, la primera y la última vez
+  que se vio y que existe una revisión confirmada, sin identificadores de caso
+  ni citas; y el desconocido devuelve un agregado vacío, no un error
+  (R29; constitución §6)
 
 ## S02.35 El análisis pasa el caso a analyzing y lo cierra con su veredicto versionado
 
@@ -246,29 +279,22 @@ trazas desplegado: la observabilidad es el libro y lo que registra LiteLLM.
   el aviso, porque sin él no hay análisis; y la sesión de Agno no lo guarda
   (constitución §6, §11; R8)
 
-## S02.38 El gateway deriva el tenant de la identidad y nunca del cuerpo
+## S02.40 analyze_notice devuelve el veredicto y su evidencia en la misma llamada
 
-- Dado un token de servicio de un tenant, uno de curador y ninguno
-- Cuando se piden capacidades con cada uno y se envía además un cuerpo que
-  declara un tenant distinto del de la credencial
-- Entonces sin credencial y con una desconocida la respuesta es 401 sin tocar
-  datos; el token de servicio opera siempre sobre su tenant e ignora el del
-  cuerpo; y el de curador, que no está atado a un tenant, recibe 403
-  (R16; constitución §6)
-
-## S02.40 analyze_notice devuelve el veredicto en la misma llamada
-
-- Dado un aviso breve válido
+- Dado un aviso breve válido y un investigador que cita el aviso
 - Cuando se envía
-- Entonces la respuesta trae el caso ya en estado terminal y su veredicto, sin
-  trabajo durable de por medio ni espera activa (W1.3; R12, R15; A12)
+- Entonces la respuesta trae el caso en estado terminal, su veredicto y las
+  señales que lo sostienen con su cita, sin trabajo durable ni espera activa
+  (W1.3; R12, R15; A12)
 
-## S02.42 La API no deja ver el caso de otro tenant
+## S02.42 La API local sirve el caso con su evidencia y responde 404 al inexistente
 
-- Dado un caso de un tenant
-- Cuando otro tenant lo consulta y hace una pregunta sobre él
-- Entonces ambas respuestas son 404 y ninguna revela si el recurso existe
-  (R16, R28)
+- Dado la API local sin credencial alguna
+- Cuando se analiza un aviso, se consulta su caso, se consulta uno inexistente y
+  se pregunta por él, y se consulta la salud
+- Entonces el análisis responde 200 con sus señales; el caso se sirve con su
+  evidencia; el inexistente responde 404 en ambas rutas; y `/health` responde
+  `ok` porque el libro contesta (constitución §12)
 
 ## S02.43 ask_case responde con la evidencia persistida y no muta el veredicto
 
@@ -285,28 +311,28 @@ trazas desplegado: la observabilidad es el libro y lo que registra LiteLLM.
 - Entonces la petición se descarta por estado y el caso conserva un único
   veredicto de versión 1 (R12, R25)
 
-## S02.47 El gateway tiene su identidad y la de los agentes es de solo lectura
+## S02.47 El proceso entra con su identidad y la de los agentes es de solo lectura
 
 - Dado el esquema aplicado dos veces
-- Cuando el gateway inicia sesión con su usuario, lo intenta con una contraseña
-  ajena y el usuario `agent` intenta escribir en `argos/ops`
+- Cuando el proceso inicia sesión con su usuario, lo intenta con una contraseña
+  incorrecta y el usuario `agent` intenta escribir en `argos/ops`
 - Entonces existe el usuario `gateway` y entra solo con su contraseña; los
   usuarios del pipeline retirado y el compartido `ledger` ya no existen; y
   `agent` lee pero no escribe: su `CREATE` no deja fila y su intento de definir
-  un usuario se rechaza por permisos (constitución §6, §7; R16)
+  un usuario se rechaza por permisos (constitución §6, §7)
 
 Un usuario `VIEWER` de SurrealDB no rechaza una escritura de datos: la ejecuta
 sin efecto y responde `OK` con resultado vacío. Solo el DDL da error explícito.
 Por eso la comprobación mira la fila, no el código de respuesta.
 
-## S02.51 El error público no filtra claves, SQL ni texto del aviso
+## S02.51 Un análisis que falla deja el caso operable y lo dice
 
-- Dado un fallo interno cuyo detalle contiene una consulta SurrealQL, una
-  contraseña y un fragmento del aviso
-- Cuando el caso lo registra y el cliente consulta su estado
-- Entonces el error público es un código estable del catálogo, el interno queda
-  en el libro para el curador y la respuesta pública no contiene la consulta, la
-  contraseña ni el texto (R28; constitución §11)
+- Dado un investigador que revienta a mitad del análisis
+- Cuando se analiza un caso y después se consulta, y aparte se envía un aviso
+  que no supera el límite de texto
+- Entonces el caso termina `failed` con el error real —tipo y mensaje— visible
+  en su consulta y no colgado en `analyzing`; y el aviso rechazado responde 422
+  con el código de su límite (R5; constitución §11)
 
 ## S02.54 El catálogo sintético demuestra la consulta de registros
 
@@ -357,3 +383,33 @@ Por eso la comprobación mira la fila, no el código de respuesta.
   con una cita inventada
 - Cuando se filtran antes de puntuar
 - Entonces solo sobrevive la que cita el aviso (R3; constitución §4)
+
+## S02.59 La CLI analiza un aviso y escribe el veredicto con su evidencia
+
+- Dado `argos analyze` con el texto de un aviso y un enlace
+- Cuando se ejecuta con un investigador que cita el aviso
+- Entonces la orden acepta texto y enlaces repetibles; la salida trae el nivel en
+  palabras, la explicación, cada indicio con su cita y su fuente, y las acciones
+  recomendadas; y termina con código de salida 0 (W1; constitución §12)
+
+## S02.60 Marcar un caso confirmado hace visible la reincidencia en el siguiente
+
+- Dado un caso ya analizado sobre un identificador y su marca de confirmado
+- Cuando llega un aviso nuevo que cita el mismo identificador
+- Entonces el segundo caso recibe una señal de reincidencia escrita por el
+  código, con el número de casos previos, y su nivel es `critical`; sin la marca
+  esa señal no existe (W4; R4, R13, R29)
+
+## S02.61 La salida del caso enseña el nivel, la evidencia y qué hacer
+
+- Dado un caso con veredicto `critical` sostenido por una advertencia oficial
+- Cuando se representa para la terminal
+- Entonces muestra el nivel en palabras, marca el indicio como oficial, incluye
+  su fuente y lista las acciones recomendadas (R6, R7)
+
+## S02.62 Un análisis que agota el presupuesto termina failed, no colgado
+
+- Dado un investigador que tarda más que el presupuesto de R15
+- Cuando se analiza un caso
+- Entonces el análisis se corta al agotarlo, el caso termina `failed` con el
+  motivo y nunca queda en `analyzing` (R15; constitución §4)

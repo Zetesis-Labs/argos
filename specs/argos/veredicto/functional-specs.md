@@ -22,7 +22,7 @@ especializados.
 
 Esta iniciativa cubre el análisis inmediato de avisos breves, el procesamiento
 asíncrono de documentos PDF, la conversación posterior sobre el veredicto, la
-ingesta de fuentes oficiales y la revisión del curador. Quedan fuera el canal
+ingesta de fuentes oficiales y la revisión de casos. Quedan fuera el canal
 público final, la denuncia asistida, el asesoramiento financiero o jurídico y
 la interpretación jurídica de contratos.
 
@@ -30,9 +30,8 @@ la interpretación jurídica de contratos.
 
 | Actor | Quién es | Qué puede hacer |
 |---|---|---|
-| **Consultante** | Persona con un aviso sospechoso. Anónima para Argos y representada por un cliente autorizado. | Enviar un aviso o documento, leer el veredicto y preguntar sobre él |
-| **Cliente de servicio** | Aplicación o agente remoto con identidad de servicio y tenant asignado. | Invocar capacidades públicas, consultar sus casos y trabajos, recibir referencias de resultados |
-| **Curador** | Quien opera el despliegue de Argos, con visión de todos los tenants. Autenticado y auditado. | Revisar casos, reintentar trabajos, marcar confirmados y falsos positivos, supervisar ingestas y explorar la memoria |
+| **Usuario** | Quien se baja Argos y lo ejecuta en su máquina. Es a la vez consultante, operador y curador: no hay más gente. | Enviar un aviso, leer el veredicto, preguntar sobre él, marcarlo revisado, explorar su memoria y curar su catálogo |
+| **Cliente local** | La terminal y, en el futuro, un panel local sobre las mismas capacidades. | Invocar cualquier capacidad; no hay credencial que presentar |
 | **Workflow de veredicto** | Coordinador del caso. | Validar el proceso, llamar a especialistas, esperar trabajos, puntuar y cerrar el caso |
 | **Agentes especialistas** | Triaje, registros, dominio, patrones, memoria, documentos, redacción y conversación. | Ejecutar únicamente su cometido con herramientas y permisos acotados |
 | **Worker de documentos** | Proceso no conversacional que transforma documentos. | Extraer texto y metadatos, ejecutar OCR cuando corresponda y guardar el resultado del trabajo |
@@ -51,8 +50,8 @@ la interpretación jurídica de contratos.
   depender de que sobreviva el agente que los solicitó.
 - Que ningún veredicto se emita sin evidencias y sin acciones.
 - Que la memoria reconozca una entidad reincidente aunque cambie el disfraz.
-- Mantener aislamiento entre tenants y trazabilidad de quién produjo, consultó
-  o reprocesó cada resultado.
+- Que todo lo analizado se quede en la máquina de quien ejecuta Argos y siga
+  siendo suyo hasta que decida borrarlo.
 
 **Trabajos del consultante**
 
@@ -64,7 +63,7 @@ la interpretación jurídica de contratos.
 - Saber qué hacer ahora: no pagar, bloquear, denunciar o hablar con el banco.
 - Preguntar dudas sobre el veredicto con el mismo contexto.
 
-**Trabajos del curador**
+**Trabajos del usuario al operar Argos**
 
 - Ver casos recientes, nivel de riesgo y trabajos pendientes o fallidos.
 - Confirmar o descartar casos para mejorar la memoria revisada.
@@ -83,16 +82,15 @@ la interpretación jurídica de contratos.
 
 | Punto | Actor | Dirección | Contenido y resultado |
 |---|---|---|---|
-| **Analizar aviso** (API/A2A) | Cliente de servicio | entra/sale | Texto, hasta tres enlaces y una imagen opcional; devuelve caso y veredicto. El análisis es un trabajo durable: si el proceso que atendía la llamada muere, el caso termina igual y se recupera con «Consultar caso» |
-| **Enviar documento** (API/A2A) | Cliente de servicio, Curador | entra/sale | PDF asociado a un caso nuevo o a uno existente sin veredicto; devuelve caso, documento, trabajo (nuevo o ya existente) y estado aceptado |
-| **Consultar trabajo** (API/A2A) | Cliente de servicio, Curador | sale | Estado, intento, progreso disponible, error público y referencias al resultado |
-| **Consultar caso** (API/A2A) | Cliente de servicio, Curador | sale | Estado actual y, cuando existe, veredicto completo |
-| **Conversar** (API/interfaz del operador) | Cliente de servicio, Curador | entra/sale | Preguntas sobre el veredicto dentro de una sesión del caso |
-| **Analizar desde CLI** | Curador | entra/sale | Mismos contratos de aviso, documento, caso y trabajo para uso interno |
+| **Analizar aviso** (CLI/API local) | Usuario | entra/sale | Texto, hasta tres enlaces y una imagen opcional; devuelve el caso con su veredicto y la evidencia que lo sostiene |
+| **Enviar documento** (API local) | Usuario | entra/sale | PDF asociado a un caso nuevo o a uno existente sin veredicto; devuelve caso, documento, trabajo y estado aceptado |
+| **Consultar trabajo** (API local) | Usuario | sale | Estado, intento, progreso disponible, error y referencias al resultado |
+| **Consultar caso** (CLI/API local) | Usuario | sale | Estado actual, error si lo hubo y, cuando existe, veredicto con sus indicios |
+| **Conversar** (CLI/API local) | Usuario | entra/sale | Preguntas sobre el veredicto dentro de una sesión del caso |
 | **Ingesta programada** | Sistema | entra | Una ejecución diaria por fuente oficial |
-| **Revisar caso** | Curador | entra | Marca de revisión y nota opcional |
-| **Reprocesar trabajo** | Curador | entra | Nueva ejecución versionada a partir del mismo documento |
-| **Explorar memoria** | Curador | sale | Consultas autorizadas sobre entidades, vínculos y casos |
+| **Revisar caso** (CLI/API local) | Usuario | entra | Marca de revisión y nota opcional |
+| **Reprocesar trabajo** (API local) | Usuario | entra | Nueva ejecución versionada a partir del mismo documento |
+| **Explorar memoria** (CLI/API local) | Usuario | sale | Consultas sobre entidades, vínculos y casos |
 | **Evento de resultado** | Argos | sale | Referencias a caso, trabajo y resultado; nunca el documento ni su texto completo |
 
 Fuera de esta iniciativa: web pública, Telegram, WhatsApp y exportaciones de
@@ -105,7 +103,7 @@ posteriores.
 
 **Inicio**: llega un aviso por API, A2A o CLI.
 
-1. Se autentica al cliente y se fija el tenant antes de leer o crear datos.
+1. Se valida el aviso antes de crear nada.
 2. Se validan los límites de R1. Si falla, se rechaza con el motivo y no se crea
    caso.
 3. Se crea el caso en `received` con el hash del aviso y, en la misma operación
@@ -141,8 +139,8 @@ posteriores.
 - Si un enlace redirige, origen y destino se analizan como entidades distintas.
 - Si una fuente no responde o se agota el tiempo, se emite `partial` con lo
   obtenido y se indica qué faltó.
-- Ante fallo interno, termina en `failed`; el cliente recibe un error estable sin
-  detalles técnicos y el curador conserva la correlación para investigarlo.
+- Ante fallo interno, termina en `failed` y el error se muestra entero: quien lo
+  recibe es quien ejecuta Argos y necesita saber qué se rompió.
 - Si el proceso que atendía la llamada se reinicia a mitad, el trabajo de
   análisis se reentrega y el caso termina igualmente; el cliente lo recupera
   con «Consultar caso» (R25).
@@ -151,7 +149,7 @@ posteriores.
 
 **Inicio**: un actor autorizado escribe en la sesión de un caso con veredicto.
 
-1. Se verifica que la sesión y el caso pertenecen al mismo tenant.
+1. Se verifica que la sesión corresponde a ese caso.
 2. La respuesta se apoya en el veredicto y sus evidencias y puede consultar la
    memoria autorizada para ampliar.
 3. Si aporta datos nuevos, se ofrece analizarlos como caso nuevo vinculado en
@@ -171,7 +169,7 @@ nuevo.
 
 ### W3 · Curar fuentes oficiales
 
-**Inicio**: el curador solicita actualizar una fuente o revisa una propuesta
+**Inicio**: el usuario solicita actualizar una fuente o revisa una propuesta
 generada de forma programada.
 
 1. Se crea un trabajo por fuente. Cada fuente se descarga respetando límite,
@@ -181,7 +179,7 @@ generada de forma programada.
 3. El resultado se compara con el catálogo versionado: las entradas nuevas se
    proponen, las existentes se actualizan sin perder su primera captura y las
    ausentes se proponen como retiradas, nunca como borradas.
-4. El curador acepta o rechaza los cambios antes de incorporarlos al catálogo.
+4. El usuario acepta o rechaza los cambios antes de incorporarlos al catálogo.
 5. Los cambios aceptados quedan revisables en Git y se cargan en la SurrealDB
    local que consultan los agentes.
 6. Se registra inicio, fin, nuevas, actualizadas, retiradas e incidencia.
@@ -192,13 +190,13 @@ actualización aceptada de cada fuente.
 **Caminos alternativos**
 
 - Una fuente caída o con formato cambiado conserva la última ingesta buena y
-  deja el trabajo fallido visible al curador.
+  deja el trabajo fallido a la vista.
 - Una ingesta con menos del 50 % de las entradas anteriores se rechaza como
   posible descarga parcial.
 
 ### W4 · Revisar un caso
 
-**Inicio**: el curador abre un caso con veredicto.
+**Inicio**: el usuario abre un caso con veredicto.
 
 1. Ve el veredicto, las señales, su evidencia, entidades, trabajos y fuentes que
    no respondieron.
@@ -211,11 +209,11 @@ actualización aceptada de cada fuente.
 
 **Inicio**: un cliente autorizado envía un PDF para un caso nuevo o existente.
 
-1. Se valida autorización, tenant y la parte barata de R19 (extensión, tipo
+1. Se valida la parte barata de R19 (extensión, tipo
    declarado, firma real y tamaño) antes de aceptar. Un caso existente solo
    admite documentos mientras no tenga veredicto; si ya lo tiene, se crea un
    caso nuevo vinculado al anterior (R12).
-2. El original se registra como documento del tenant y del caso, se calcula su
+2. El original se registra como documento del caso, se calcula su
    hash y se guarda como artefacto privado. El caso pasa a
    `awaiting_processing`: un caso con documentos pendientes no se analiza hasta
    que todos terminen (R15).
@@ -255,7 +253,7 @@ el trabajo queda en un estado terminal explicable.
 - Agotado el presupuesto, el trabajo termina `failed`. Si el caso no tiene
   ninguna otra entrada analizable termina `failed`; si la tiene, se analiza y el
   veredicto es `partial` e indica que el documento no se procesó. El caso no
-  finge un veredicto y el curador puede reprocesar.
+  finge un veredicto y se puede reprocesar.
 - Reprocesar un caso `failed` o `partial` lo devuelve a `awaiting_processing`
   con un trabajo nuevo; el veredicto anterior se conserva como versión superada
   (R12, R22).
@@ -306,11 +304,10 @@ el trabajo queda en un estado terminal explicable.
   Los fragmentos que un agente consulta no se guardan en su sesión, solo sus
   referencias; las trazas registran metadatos de las llamadas a modelos, no sus
   mensajes. Los nombres de personas físicas no se persisten como entidades.
-- **R9 · Deduplicación.** Dos avisos con el mismo hash dentro de 24 horas y el
-  mismo tenant comparten caso: el segundo recibe el caso del primero, terminado
-  o en curso, salvo que aquel terminara en `failed`, y entonces se analiza de
-  nuevo. El hash cubre texto normalizado, enlaces e imagen. No existe
-  deduplicación observable entre tenants.
+- **R9 · Repetir es analizar de nuevo.** Enviar dos veces el mismo aviso abre
+  dos casos. Deduplicar ahorraría un análisis y a cambio devolvería un caso ya
+  cerrado, o uno fallido, en lugar de mirar otra vez; en local no hay coste que
+  racionar.
 - **R10 · Vínculos.** Dos entidades se vinculan como «mismo actor» solo si
   comparten un identificador fuerte. Solo compartir empresa no basta. Un caso
   `false_positive` no crea reincidencia.
@@ -322,22 +319,21 @@ el trabajo queda en un estado terminal explicable.
   tiene documentos pendientes y a `analyzing` cuando arranca su trabajo de
   análisis. Todo caso pasa por `analyzing` mediante un trabajo durable, también
   el de un aviso breve. Los terminales son `verdict_issued`, `partial`,
-  `insufficient` y `failed`. Solo el curador saca a un caso de un terminal:
-  reprocesar devuelve `failed` o `partial` a `awaiting_processing` y conserva el
-  veredicto anterior como versión superada. Un documento enviado a un caso con
+  `insufficient` y `failed`. Solo un reproceso explícito saca a un caso de un
+  terminal, y conserva el veredicto anterior como versión superada. Un documento enviado a un caso con
   veredicto crea un caso vinculado; un reintento de extracción no.
 - **R13 · Estados de revisión.** `unreviewed` pasa a `confirmed`,
-  `false_positive` o `inconclusive`. El curador puede cambiar la marca y se
-  conserva autor y fecha de cada cambio.
+  `false_positive` o `inconclusive`, y la marca se puede cambiar conservando su
+  fecha. Es la única fuente de la reincidencia: sin ella la memoria sabe que un
+  identificador se repite, pero no que alguna vez fue fraude.
 - **R14 · Idioma.** Español o inglés siguen el idioma de la entrada; cualquier
   otro idioma produce veredicto en español. Las citas mantienen su original.
 - **R15 · Tiempo.** W1 tarda como máximo 60 segundos desde que toda entrada
   necesaria es analizable. W5 es asíncrono y no consume ese presupuesto.
-- **R16 · Acceso y tenant.** Toda operación exige identidad de servicio o de
-  curador. La identidad de servicio determina el tenant antes de aceptar
-  identificadores, y solo ese tenant consulta sus casos, trabajos y
-  extracciones. El curador opera todos los tenants: revisar, explorar, ingerir
-  y reprocesar exigen su rol y cada acción queda atribuida y fechada.
+- **R16 · Ejecución local.** Argos corre en la máquina de su usuario y no
+  autentica a nadie: no hay clientes ajenos de los que aislarse ni roles que
+  distinguir. Nada de lo que analiza sale de esa máquina. El mínimo privilegio
+  se aplica hacia dentro, para limitar lo que un prompt puede provocar.
 - **R17 · Escrituras acotadas.** W1 escribe caso, entidades, señales y veredicto;
   W3 propone cambios al catálogo curado y actualiza su proyección local; W5
   escribe documentos, trabajos, extracciones y chunks; W4 escribe revisiones.
@@ -358,7 +354,7 @@ el trabajo queda en un estado terminal explicable.
   Cada intento tiene inicio, fin, arrendamiento y error categorizado. Un intento
   que agota su arrendamiento sin cerrarse se considera perdido: el trabajo
   vuelve a `queued` con un intento nuevo mientras quede presupuesto y, si no,
-  termina `failed`. Solo el curador ve detalle técnico.
+  termina `failed`.
 - **R22 · Idempotencia.** Un documento se identifica dentro de su caso por el
   hash del contenido: enviar el mismo PDF al mismo caso devuelve el documento y
   el trabajo existentes. Una extracción se identifica por documento, versión de
@@ -366,8 +362,8 @@ el trabajo queda en un estado terminal explicable.
   resultado. Reprocesar cambia la versión o crea una orden explícita y conserva
   historia. El mismo PDF en casos distintos son documentos y extracciones
   distintos, cada uno con su caducidad.
-- **R23 · Propiedad.** Documento y extracción pertenecen al tenant y al caso, no
-  al agente ni al worker. Una sesión conserva referencias, nunca la única copia.
+- **R23 · Propiedad.** Documento y extracción pertenecen al caso, no al agente
+  ni al worker. Una sesión conserva referencias, nunca la única copia.
 - **R24 · Resultado referenciado.** Una notificación contiene identificadores y
   estado. El consumidor vuelve a consultar el caso con su identidad; no recibe
   el PDF ni el texto completo en la notificación.
@@ -384,11 +380,11 @@ el trabajo queda en un estado terminal explicable.
 - **R28 · Errores visibles y operables.** Todo fallo termina en un estado, código
   público y correlación. Los errores no se convierten en respuestas vacías ni se
   pierden después de agotar reintentos.
-- **R29 · Memoria compartida.** Las entidades y sus vínculos son globales: un
-  mismo identificador es un solo nodo aunque lo citen casos de tenants
-  distintos. Un tenant recibe de la memoria solo agregados: en cuántos casos y
-  desde cuándo se vio la entidad y si alguno está `confirmed`; nunca
-  identificadores, citas ni tenant de casos ajenos. El curador ve el detalle.
+- **R29 · Memoria entre casos.** Las entidades y sus vínculos son globales: un
+  mismo identificador es un solo nodo y sobrevive al caso que lo descubrió. La
+  memoria se consulta como agregado —en cuántos casos y desde cuándo se vio, si
+  alguno está `confirmed`— porque es lo que sostiene una decisión; el detalle
+  está en los casos, que son del usuario.
 
 ## 7. Conceptos de datos
 
@@ -396,20 +392,20 @@ el trabajo queda en un estado terminal explicable.
 |---|---|---|---|
 | **Tenant** | Frontera de propiedad y autorización | identificador, identidad de servicio, política de retención | activo, suspendido |
 | **Aviso** | Entrada breve del consultante | texto, enlaces, imagen, idioma detectado | no se persiste íntegro |
-| **Caso** | Unidad de investigación | tenant, hash, fecha, idioma, nivel, parcial, tipologías, revisión, correlación, caso anterior | R12, R13 |
-| **Documento** | PDF asociado a un caso | tenant, caso, hash, MIME, tamaño, páginas, referencia privada, caducidad | accepted, rejected, expired |
-| **Trabajo** | Encargo durable de procesamiento | tipo (`document.extract`, `case.analyze`, `source.ingest`), tenant, caso, documento, intento actual, presupuesto de intentos, arrendamiento, versión, fechas, error público | R21 |
+| **Caso** | Unidad de investigación | aviso, fecha, idioma, nivel, parcial, tipologías, revisión, error, caso anterior | R12, R13 |
+| **Documento** | PDF asociado a un caso | caso, hash, MIME, tamaño, páginas, referencia privada, caducidad | accepted, rejected, expired |
+| **Trabajo** | Encargo durable de procesamiento | tipo (`document.extract`, `source.ingest`), caso, documento, intento actual, presupuesto de intentos, arrendamiento, versión, fechas, error | R21 |
 | **Intento** | Una ejecución de un trabajo | número, consumidor, inicio, fin, arrendamiento, error categorizado | running, succeeded, failed, lost |
 | **Extracción** | Resultado versionado de un documento | documento, extractor, versión, hash, páginas, referencia privada, calidad, fecha | available, superseded, expired |
 | **Chunk** | Fragmento recuperable con contexto | extracción, página, posición, texto, hash, caducidad | available, expired |
-| **Entidad** | Identificador del presunto actor, compartido entre tenants | tipo, valor normalizado, primera y última aparición, número de casos, casos confirmados | R29 |
+| **Entidad** | Identificador del presunto actor, compartido entre casos | tipo, valor normalizado, primera y última aparición, número de casos, casos confirmados | R29 |
 | **Señal** | Indicio sobre un caso | tipo, fuerza, análisis, fuente, fecha, valor, evidencia, página, entidad | — |
 | **Advertencia oficial** | Entrada de un regulador | regulador, entidad, identificadores, tipo, clon, fechas, URL | vigente, retirada |
 | **Tipología** | Familia de fraude | nombre, descripción, patrones, acciones | — |
 | **Patrón** | Técnica de manipulación | nombre, fuerza, ejemplos | — |
 | **Veredicto** | Salida explicada del caso | versión, nivel, parcial, resumen, señales, entidades, reincidencia, acciones, fuentes ausentes | vigente, superado |
 | **Vínculo** | Relación del grafo | tipo, origen, destino, caso, fecha | — |
-| **Revisión** | Juicio del curador | marca, nota, autor, fecha | R13 |
+| **Revisión** | Juicio del usuario sobre un caso | marca, nota, fecha | R13 |
 | **Ejecución de ingesta** | Pasada sobre una fuente | fuente, fechas, recuentos, error | ok, error, rechazada |
 | **Guía de acciones** | Recomendaciones por nivel y tipología | nivel, tipología, acciones ordenadas, dónde acudir | — |
 
@@ -448,11 +444,12 @@ aceptado → en cola → procesando → extracción disponible → analizando �
   mensajería son iniciativas posteriores.
 - **A3** · CNMV se obtiene de sus fuentes publicadas; FCA e I-SCAN se integran
   con el mecanismo oficial disponible al implementar cada fuente.
-- **A4** · El consultante no tiene cuenta propia; el tenant pertenece al cliente
-  que canaliza la consulta.
-- **A5** · R18 fija 12 meses para el caso y 30 días para contenido completo.
-- **A6** · R1, R15 y R19 son valores iniciales configurables hacia abajo por
-  tenant, nunca hacia arriba sin una nueva decisión.
+- **A4** · Argos no tiene cuentas: se distribuye como un devcontainer y su
+  único usuario es quien lo ejecuta. Decidido el 2026-09-04.
+- **A5** · Nada caduca solo: un análisis local se guarda hasta que su dueño lo
+  borra. R18 vuelve si Argos se ofrece alguna vez como servicio alojado.
+- **A6** · R1, R15 y R19 son valores iniciales configurables hacia abajo, nunca
+  hacia arriba sin una nueva decisión.
 - **A7** · Las imágenes breves usan visión por la pasarela; el PDF usa extracción
   determinista y OCR de respaldo en el worker.
 - **A8** · El worker de documentos se implementa en Python dentro del
@@ -461,9 +458,9 @@ aceptado → en cola → procesando → extracción disponible → analizando �
   antes cómo se ancla a la spec.
 - **A9** · La consulta de trabajo es el mecanismo obligatorio; una notificación
   push posterior es una comodidad y no la fuente de verdad.
-- **A10** · La memoria de entidades es compartida entre tenants y se expone a
-  cada tenant solo como agregados (R29). Decidido el 2026-09-03.
-- **A11** · El curador es global al despliegue, no por tenant (R16).
+- **A10** · La memoria de entidades se comparte entre casos y se consulta como
+  agregados (R29). Decidido el 2026-09-03, sin tenants desde el 2026-09-04.
+- **A11** · Revisar un caso es del usuario y no exige rol alguno (R13, R16).
 - **A12** · El análisis de un aviso breve ocurre dentro de la llamada que lo
   pide: cabe en el presupuesto de R15 y no necesita ser un trabajo durable. Lo
   será cuando la entrada deje de caber, empezando por los documentos (R12, R25).
@@ -474,8 +471,8 @@ aceptado → en cola → procesando → extracción disponible → analizando �
 
 **Preguntas abiertas no bloqueantes para iniciar la plataforma**
 
-- **Q1** · ¿Debe el curador ver temporalmente el texto original enmascarado para
-  revisar falsos positivos? Por defecto, solo ve citas y páginas necesarias.
+- **Q1** · Resuelta el 2026-09-04: el aviso es del usuario y lo ve entero. La
+  pregunta vuelve si Argos se ofrece alguna vez como servicio alojado.
 - **Q2** · ¿Qué fuente oficial se usará para Banco de España y DGSFP?
 - **Q3** · ¿Se publicarán estadísticas agregadas? Requiere una revisión de
   privacidad independiente.

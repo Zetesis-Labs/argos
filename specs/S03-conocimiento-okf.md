@@ -169,6 +169,6 @@ públicas aceptadas por el curador, nunca entradas privadas del consultante.
 - Dado todos los ficheros del corpus y su configuración
 - Cuando se auditan antes de publicar
 - Entonces solo contienen ejemplos sintéticos bajo dominios reservados, no
-  incluyen casos, tenants, documentos ni identificadores privados, y no existe
+  incluyen casos, documentos ni identificadores de un análisis, y no existe
   un segundo catálogo operativo en fixtures o JSON manual (conocimiento/R11,
   R14; constitución §6, §13)
