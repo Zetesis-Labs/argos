@@ -93,8 +93,10 @@ asíncrono para los trabajos pesados.
   comparten credenciales entre agentes, workers y runtime en producción.
 - El curador opera el despliegue completo, no un tenant. Sus acciones cruzan
   tenants y cada una queda atribuida y fechada.
-- Ningún aviso real entra en el repositorio: todos los datos de prueba son
-  sintéticos y viven en `tests/fixtures/`.
+- Ningún aviso, documento, señal ni identificador privado de un consultante
+  entra en el repositorio. El catálogo podrá contener advertencias regulatorias
+  públicas aceptadas por el curador; mientras no se implemente esa ingesta, todo
+  su contenido es sintético.
 
 ## 7. SurrealDB como verdad operacional
 
@@ -242,9 +244,17 @@ asíncrono para los trabajos pesados.
 - El conocimiento curado —advertencias, tipologías, patrones y guías de
   actuación— tiene su fuente versionada en Git. SurrealDB es su proyección local
   para consulta, no una fuente editorial independiente.
+- El corpus usa fichas Markdown bajo un vocabulario OKF cerrado. Su bundle
+  `okf-graph/v1` alimenta tanto la representación humana como una proyección
+  completa, atómica e identificada por revisión Git y hash en SurrealDB.
+- Tipos, relaciones, propiedades y modos visuales se declaran en el perfil del
+  repositorio. El runtime no interpreta Markdown ni mantiene un segundo
+  vocabulario.
 - Un checkout contiene el conocimiento necesario para arrancar. Actualizarlo es
   un cambio explícito y revisable del repositorio; nunca ocurre como efecto
   oculto de analizar un caso.
+- Un catálogo federado se fija a una revisión inmutable y se materializa antes
+  de analizar; la federación no crea una dependencia remota del runtime.
 - Casos, documentos, señales privadas, revisiones de casos y datos de tenants no
   forman parte del catálogo de conocimiento.
 
