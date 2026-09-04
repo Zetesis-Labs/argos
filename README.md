@@ -69,6 +69,11 @@ POST /v1/notices → gateway → núcleo (identificadores, señales, nivel)
 Un informe de un modelo que se declara oficial o reincidente se descarta al
 parsearlo, y una señal cuya cita no aparece en el aviso no puntúa.
 
+La reincidencia está implementada y probada pero todavía no puede dispararse:
+exige un caso previo marcado como confirmado y nada en el producto escribe esa
+marca hasta que exista la revisión del curador. El camino vivo a `critical` es
+la advertencia oficial vigente.
+
 ## Agentes
 
 | Componente | Cometido |

@@ -32,6 +32,12 @@ fuentes oficiales, revisión del curador ni análisis de dominio. Un aviso que
 solo trae imagen se acepta, se deduplica por su hash y termina `insufficient`:
 Argos no lee imágenes todavía.
 
+Consecuencia de no haber revisión del curador: todo caso nace `unreviewed` y
+nada lo cambia, así que `history.confirmed` nunca es cierto y la señal de
+reincidencia no puede dispararse en producción. Su cálculo está implementado y
+probado (S02.28, S02.57), pero el único camino vivo a `critical` es hoy la
+advertencia oficial vigente. Lo desbloquea la vertical de revisión.
+
 ## 2. Topología
 
 ```text

@@ -43,6 +43,10 @@ Dentro de `argos-app-1`: `pytest` 59 passed, `spec-check`, `ruff`, `mypy` y
 
 ## Lo que sigue abierto
 
+- **La reincidencia no puede dispararse.** Nada escribe `review_state`, así que
+  `history.confirmed` nunca es cierto. Está implementada y probada, pero el
+  único camino vivo a `critical` es la advertencia oficial. Lo desbloquea la
+  revisión del curador, que por eso sube al segundo puesto del roadmap.
 - **Ningún veredicto medido contra datos reales.** Es el motivo del recorte y
   sigue siendo el trabajo pendiente número uno: un conjunto de avisos reales
   etiquetados con el que calibrar la escalera de R4.
