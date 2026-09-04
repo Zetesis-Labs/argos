@@ -9,6 +9,9 @@ __pycache__/
 .coverage
 htmlcov/
 dist/
+!knowledge/dist/
+!knowledge/dist/okf-graph.json
+public/
 *.egg-info/
 .DS_Store
 uv.lock.bak

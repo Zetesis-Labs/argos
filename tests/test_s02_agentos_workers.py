@@ -39,6 +39,7 @@ from argos.core.analysis import (
 from argos.core.capabilities import CARD_PATH, GATEWAY_CAPABILITIES, MESSAGES_PATH
 from argos.core.identity import Identity, Role
 from argos.core.keys import extraction_manifest_key, extraction_text_key, source_document_key
+from argos.core.knowledge import parse_knowledge_bundle, warnings_from_bundle
 from argos.core.ledger import ATTEMPTS_EXHAUSTED, LEASE_LOST, new_job
 from argos.core.messages import (
     CASE_ANALYZER,
@@ -107,8 +108,8 @@ from argos.core.reprocess import reprocess_options
 from argos.devtools.bootstrap_bus import declare_topology
 from argos.devtools.bootstrap_db import SCHEMA_VERSION, apply_schema
 from argos.devtools.bootstrap_store import build_store, ensure_bucket
+from argos.devtools.project_knowledge import read_bundle
 from argos.devtools.rehearse_store import rehearse
-from argos.devtools.seed_warnings import WarningFixtureError, load_warning_fixture, seed_warnings
 from argos.platform.agno_db import build_agno_db
 from argos.platform.bus import JetStreamBus
 from argos.platform.ledger import ledger_for
@@ -2646,21 +2647,15 @@ async def test_metrics_are_curator_only(
     assert tenant.id not in rendered
 
 
-async def test_demo_warnings_are_valid_queryable_and_idempotent(tmp_path: Path) -> None:
-    """S02.54 las advertencias sintéticas se validan, se consultan y no se duplican."""
+async def test_demo_warnings_are_queryable(
+    settings: Settings,
+) -> None:
+    """S02.54 el catálogo sintético demuestra la consulta del agente de registros."""
     ledger = InMemoryLedger()
-    warnings = load_warning_fixture(FIXTURES / "synthetic_warnings.json")
+    bundle = parse_knowledge_bundle(read_bundle(settings.knowledge_graph_path))
+    warnings = warnings_from_bundle(bundle)
+    await ledger.commit([Insert(warning) for warning in warnings])
 
-    first = await seed_warnings(ledger, warnings)
-    second = await seed_warnings(ledger, warnings)
-
-    assert first.inserted == len(warnings) and first.updated == first.unchanged == 0
-    assert second.unchanged == len(warnings) and second.inserted == second.updated == 0
-    changed = (replace(warnings[0], active=False), *warnings[1:])
-    third = await seed_warnings(ledger, changed)
-    stored = await ledger.warning(warnings[0].id)
-    assert third.updated == 1 and third.unchanged == len(warnings) - 1
-    assert stored is not None and stored.active is False and stored.revision == 1
     matches = await find_registry_matches(
         Services(
             ledger=ledger,
@@ -2688,25 +2683,26 @@ async def test_demo_warnings_are_valid_queryable_and_idempotent(tmp_path: Path) 
             True,
         )
     ]
-
-    invalid = tmp_path / "warnings-without-capture.json"
-    invalid.write_text(
-        json.dumps(
-            [
-                {
-                    "id": "demo-without-capture",
-                    "regulator": "CNMV",
-                    "url": "https://warnings.cnmv.example/demo/without-capture",
-                    "entity_kind": "domain",
-                    "entity_value": "without-capture.test",
-                    "active": True,
-                }
-            ]
+    withdrawn = await find_registry_matches(
+        Services(
+            ledger=ledger,
+            object_store=InMemoryObjectStore(),
+            bus=FakeBus(),
+            clock=FakeClock(),
+            ids=SequentialIds(),
+            policy=TEST_POLICY,
+            bucket="argos",
         ),
-        encoding="utf-8",
+        ToolCaller(
+            agent=AgentName.REGISTRIES,
+            tenant_id="tenant-demo",
+            case_id="case-demo",
+        ),
+        kind=EntityKind.DOMAIN,
+        value="retired-platform.test",
     )
-    with pytest.raises(WarningFixtureError, match="captured_at"):
-        load_warning_fixture(invalid)
+    assert not isinstance(withdrawn, ToolDenied)
+    assert [match.active for match in withdrawn] == [False]
 
 
 def test_services_profile_bootstraps_and_runs_argos(settings: Settings) -> None:

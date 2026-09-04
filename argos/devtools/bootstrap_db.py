@@ -8,7 +8,7 @@ import sys
 from argos.config import WORKLOADS, Settings
 from argos.platform.surreal import SurrealHttp
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def placeholder(name: str) -> str:

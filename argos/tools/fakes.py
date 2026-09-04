@@ -7,6 +7,7 @@ from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from argos.core.knowledge import KnowledgeBundle, KnowledgeSnapshot
 from argos.core.messages import ConsumerSpec, JobMessage, decode_job_message
 from argos.core.model import (
     Artifact,
@@ -76,6 +77,38 @@ class SequentialIds:
     def new_id(self) -> str:
         self._next += 1
         return f"{self._prefix}{self._next:04d}"
+
+
+class InMemoryKnowledgeProjection:
+    def __init__(self) -> None:
+        self.current: KnowledgeSnapshot | None = None
+        self.nodes: tuple[object, ...] = ()
+        self.edges: tuple[object, ...] = ()
+        self.warnings: tuple[OfficialWarning, ...] = ()
+        self.writes = 0
+        self.fail_next = False
+
+    async def activate(
+        self,
+        snapshot: KnowledgeSnapshot,
+        bundle: KnowledgeBundle,
+        warnings: Sequence[OfficialWarning],
+    ) -> bool:
+        if (
+            self.current is not None
+            and self.current.content_hash == snapshot.content_hash
+            and self.current.projection_version == snapshot.projection_version
+        ):
+            return False
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("fallo de almacenamiento")
+        self.current = snapshot
+        self.nodes = bundle.nodes
+        self.edges = bundle.edges
+        self.warnings = tuple(warnings)
+        self.writes += 1
+        return True
 
 
 SHARED_RECORDS = (Entity, EntityLink, OfficialWarning)

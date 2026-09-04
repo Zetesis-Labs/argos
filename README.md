@@ -17,6 +17,9 @@ un núcleo determinista valida señales, calcula el nivel y gobierna los estados
   worker de documentos, clúster de agentes, workflow de veredicto, gateway con
   sus capacidades, janitor de retención, métricas, una identidad por workload y
   advertencias sintéticas de demostración. Sus 55 casos tienen test.
+- **S03 implementada**: corpus OKF en Markdown/Git, bundle validado y
+  versionado, explorador gráfico opcional y proyección local atómica en
+  SurrealDB. Sus siete casos tienen test.
 - Las verticales del análisis real —identificadores, dominio, puntuación,
   veredicto, fuentes y memoria— siguen el orden de `specs/README.md`.
 
@@ -41,8 +44,9 @@ API / A2A → AgentOS gateway → workflow + equipo de agentes
   Dentro de una instancia, Agno coordina mediante Team y Workflow.
 - **SurrealDB `argos/ops`** es la fuente de verdad para casos, grafo, trabajos,
   extracciones y outbox. Los agentes acceden mediante herramientas MCP acotadas.
-- **El conocimiento curado** se versiona en Git y se carga en SurrealDB para su
-  consulta local. Argos no necesita un servicio remoto para analizar.
+- **El conocimiento curado** se escribe como fichas Markdown en Git. El bundle
+  OKF versionado alimenta tanto el explorador como una proyección reconstruible
+  en SurrealDB; Argos no necesita red ni el explorador para analizar.
 - **SurrealDB `agno/sessions`** pertenece al runtime de Agno y no sustituye la
   memoria operacional.
 - **NATS JetStream** entrega comandos y eventos por referencia. Los mensajes
@@ -122,7 +126,8 @@ es un trabajo durable que sobrevive al proceso que atendió la llamada.
 
 Con Dev Containers basta con «Reopen in Container»: Compose levanta la
 infraestructura y los seis procesos, y una tarea idempotente aplica el esquema,
-declara JetStream, crea el bucket y carga el conocimiento sintético local.
+declara JetStream, crea el bucket y proyecta el bundle de conocimiento incluido
+en el checkout.
 SurrealDB y NATS de test están aislados, por lo que la suite puede ejecutarse
 mientras el producto sigue activo sin que sus workers consuman datos de prueba.
 
@@ -155,16 +160,27 @@ docker exec argos-app-1 uv run pyright
 No se ejecutan tests, lint, tipos ni builds desde el host.
 
 `bootstrap-local` es la única preparación del entorno. `bootstrap-db`,
-`bootstrap-bus`, `bootstrap-store` y `seed-demo-warnings` siguen disponibles
+`bootstrap-bus`, `bootstrap-store` y `project-knowledge` siguen disponibles
 para diagnosticar cada pieza por separado.
 
-`seed-demo-warnings` reconcilia de forma idempotente tres advertencias del
-fixture `tests/fixtures/synthetic_warnings.json`. Sus URLs usan el dominio
-reservado `.example`; no son datos reales ni sustituyen la ingesta de fuentes
-de S07. La advertencia activa de dominio puede consultarse con
+`project-knowledge` valida `knowledge/dist/okf-graph.json` y activa en una sola
+transacción sus nodos, relaciones y tres advertencias sintéticas. Sus URLs usan
+dominios reservados `.example`; no son datos reales ni sustituyen la ingesta de
+fuentes de S08. La advertencia activa de dominio puede consultarse con
 `example-broker.test`. El modelo `mock` no extrae identificadores ni produce
 señales, por lo que una demostración completa del veredicto seguirá devolviendo
-`undetermined` hasta implementar S03 o usar un investigador controlado.
+`undetermined` hasta implementar S04 o usar un investigador controlado.
+
+El explorador no bloquea Argos. Para reconstruir y servirlo opcionalmente en
+`http://localhost:8400`:
+
+```bash
+docker compose -f .devcontainer/docker-compose.yml --profile docs up -d knowledge
+```
+
+Tras curar fichas, el bundle se regenera dentro de ese contenedor con
+`docker compose -f .devcontainer/docker-compose.yml --profile docs run --rm knowledge bash okf/update-bundle.sh`
+y se revisa junto al corpus en Git.
 
 | Servicio | URL en el host |
 |---|---|
@@ -175,6 +191,7 @@ señales, por lo que una demostración completa del veredicto seguirá devolvien
 | Surrealist | `http://localhost:8200` |
 | NATS JetStream | `nats://localhost:4300` (monitor en `http://localhost:8300`) |
 | RustFS | `http://localhost:9390` (consola en `http://localhost:9391`) |
+| Conocimiento OKF | `http://localhost:8400` (perfil opcional `docs`) |
 
 El compose incluye Redis y un almacén MinIO exclusivamente como dependencias
 internas de Langfuse. El código de Argos no los usa como cola ni como almacén
@@ -186,9 +203,11 @@ Lee en este orden:
 
 1. [`specs/constitution.md`](specs/constitution.md): invariantes del proyecto.
 2. [`specs/argos/veredicto/functional-specs.md`](specs/argos/veredicto/functional-specs.md): comportamiento del producto.
-3. [`specs/S01-plataforma.md`](specs/S01-plataforma.md): base ya verificada.
-4. [`specs/S02-agentos-workers.md`](specs/S02-agentos-workers.md): arquitectura completa del clúster y workers.
-5. [`specs/README.md`](specs/README.md): anclaje, estado e índice de fases.
+3. [`specs/argos/conocimiento/functional-specs.md`](specs/argos/conocimiento/functional-specs.md): curación, exploración y proyección.
+4. [`specs/S01-plataforma.md`](specs/S01-plataforma.md): base ya verificada.
+5. [`specs/S02-agentos-workers.md`](specs/S02-agentos-workers.md): arquitectura completa del clúster y workers.
+6. [`specs/S03-conocimiento-okf.md`](specs/S03-conocimiento-okf.md): fundación ejecutable de conocimiento.
+7. [`specs/README.md`](specs/README.md): anclaje, estado e índice de fases.
 
 ## Reglas de calidad
 

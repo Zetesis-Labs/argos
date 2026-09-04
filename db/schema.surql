@@ -206,6 +206,41 @@ DEFINE FIELD IF NOT EXISTS captured_at ON warning TYPE datetime;
 DEFINE FIELD IF NOT EXISTS revision ON warning TYPE int;
 DEFINE INDEX IF NOT EXISTS warning_entity ON warning FIELDS entity_kind, entity_value;
 
+-- Proyección reconstruible del bundle OKF. Las propiedades permanecen como JSON
+-- canónico; los campos consultados por negocio se derivan a tablas tipadas.
+DEFINE TABLE IF NOT EXISTS knowledge_snapshot SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS source_head ON knowledge_snapshot TYPE string;
+DEFINE FIELD IF NOT EXISTS content_hash ON knowledge_snapshot TYPE string;
+DEFINE FIELD IF NOT EXISTS graph_schema ON knowledge_snapshot TYPE string;
+DEFINE FIELD IF NOT EXISTS profile ON knowledge_snapshot TYPE string;
+DEFINE FIELD IF NOT EXISTS projection_version ON knowledge_snapshot TYPE int;
+DEFINE FIELD IF NOT EXISTS imported_at ON knowledge_snapshot TYPE datetime;
+DEFINE FIELD IF NOT EXISTS node_count ON knowledge_snapshot TYPE int;
+DEFINE FIELD IF NOT EXISTS edge_count ON knowledge_snapshot TYPE int;
+DEFINE FIELD IF NOT EXISTS warning_count ON knowledge_snapshot TYPE int;
+
+DEFINE TABLE IF NOT EXISTS knowledge_node SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS knowledge_id ON knowledge_node TYPE string;
+DEFINE FIELD IF NOT EXISTS slug ON knowledge_node TYPE string;
+DEFINE FIELD IF NOT EXISTS title ON knowledge_node TYPE string;
+DEFINE FIELD IF NOT EXISTS node_type ON knowledge_node TYPE string;
+DEFINE FIELD IF NOT EXISTS description ON knowledge_node TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS path ON knowledge_node TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS properties_json ON knowledge_node TYPE string;
+DEFINE FIELD IF NOT EXISTS source_head ON knowledge_node TYPE string;
+DEFINE INDEX IF NOT EXISTS knowledge_node_identity ON knowledge_node FIELDS knowledge_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS knowledge_node_slug ON knowledge_node FIELDS slug UNIQUE;
+
+DEFINE TABLE IF NOT EXISTS knowledge_edge SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS source_knowledge_id ON knowledge_edge TYPE string;
+DEFINE FIELD IF NOT EXISTS target_knowledge_id ON knowledge_edge TYPE string;
+DEFINE FIELD IF NOT EXISTS source_slug ON knowledge_edge TYPE string;
+DEFINE FIELD IF NOT EXISTS target_slug ON knowledge_edge TYPE string;
+DEFINE FIELD IF NOT EXISTS label ON knowledge_edge TYPE string;
+DEFINE FIELD IF NOT EXISTS derived ON knowledge_edge TYPE bool;
+DEFINE FIELD IF NOT EXISTS source_head ON knowledge_edge TYPE string;
+DEFINE INDEX IF NOT EXISTS knowledge_edge_identity ON knowledge_edge FIELDS source_knowledge_id, label, target_knowledge_id UNIQUE;
+
 DEFINE TABLE IF NOT EXISTS signal SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS tenant_id ON signal TYPE string;
 DEFINE FIELD IF NOT EXISTS case_id ON signal TYPE string;
@@ -238,4 +273,4 @@ DEFINE FIELD IF NOT EXISTS revision ON verdict TYPE int;
 DEFINE INDEX IF NOT EXISTS verdict_case_version ON verdict FIELDS case_id, version UNIQUE;
 DEFINE INDEX IF NOT EXISTS verdict_case_state ON verdict FIELDS case_id, state;
 
-UPSERT schema_version:current SET version = 4;
+UPSERT schema_version:current SET version = 5;

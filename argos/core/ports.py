@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from argos.core.analysis import DraftEntity, DraftSignal
+from argos.core.knowledge import KnowledgeBundle, KnowledgeSnapshot
 from argos.core.messages import JobMessage
 from argos.core.model import (
     Artifact,
@@ -115,6 +116,15 @@ class Ledger(Protocol):
     async def current_verdict(self, case_id: str) -> Verdict | None: ...
 
     async def delete_tenant_data(self, tenant_id: str) -> None: ...
+
+
+class KnowledgeProjection(Protocol):
+    async def activate(
+        self,
+        snapshot: KnowledgeSnapshot,
+        bundle: KnowledgeBundle,
+        warnings: Sequence[OfficialWarning],
+    ) -> bool: ...
 
 
 @dataclass(frozen=True)

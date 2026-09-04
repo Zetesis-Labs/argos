@@ -31,6 +31,31 @@ x-langfuse-env: &langfuse-env
   NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3200}
 
 services:
+  knowledge:
+    build:
+      context: .
+      dockerfile: knowledge.Dockerfile
+    restart: unless-stopped
+    profiles: ["docs"]
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+      - knowledge_cache:/cache
+    environment:
+      XDG_CACHE_HOME: /cache
+    ports:
+      - "127.0.0.1:${KNOWLEDGE_PORT:-8400}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://localhost:8080/static/okf-graph.json').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
   app:
     build:
       context: .
@@ -56,6 +81,7 @@ services:
       SURREAL_WORKER_PASSWORD: ${SURREAL_WORKER_PASSWORD:-worker-dev-password}
       SURREAL_JANITOR_PASSWORD: ${SURREAL_JANITOR_PASSWORD:-janitor-dev-password}
       NATS_URL: nats://nats:4222
+      KNOWLEDGE_GRAPH_PATH: knowledge/dist/okf-graph.json
       ARTIFACT_ENDPOINT: http://rustfs:9000
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-argos-artifacts}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-argos-artifacts-dev-secret}
@@ -395,6 +421,7 @@ services:
       start_period: 20s
 
 volumes:
+  knowledge_cache:
   app_venv:
   nats_data:
   rustfs_data:

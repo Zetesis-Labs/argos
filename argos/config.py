@@ -80,6 +80,13 @@ class Settings:
     schema_path: Path = field(
         default_factory=lambda: Path(environment("SCHEMA_PATH", "db/schema.surql"))
     )
+    knowledge_graph_path: Path = field(
+        default_factory=lambda: Path(
+            environment(
+                "KNOWLEDGE_GRAPH_PATH", "knowledge/dist/okf-graph.json"
+            )
+        )
+    )
 
     litellm_base_url: str = field(
         default_factory=lambda: environment("LITELLM_BASE_URL", "http://litellm:4000")

@@ -1,0 +1,407 @@
+{
+  "schema": "okf-graph/v1",
+  "okf_version": "0.1",
+  "okf_profile": "https://argos.local/okf/profiles/knowledge/v1",
+  "source_head": "d1206f66182ce771f94870e38d01f0a71efa9c8b",
+  "stale": false,
+  "site": "Argos · Conocimiento",
+  "baseUrl": "https://localhost:8400",
+  "types": [
+    "entity",
+    "warning",
+    "regulator",
+    "source",
+    "jurisdiction",
+    "typology",
+    "pattern",
+    "guidance"
+  ],
+  "edgeLabels": [
+    "Warns about",
+    "Issued by",
+    "Cites",
+    "Operates in",
+    "Same as",
+    "Supersedes",
+    "Part of",
+    "Contains"
+  ],
+  "propertyGroups": [
+    {
+      "id": "stable-identity",
+      "label": "Identidad estable",
+      "appliesTo": [
+        "entity",
+        "warning",
+        "regulator",
+        "source",
+        "jurisdiction",
+        "typology",
+        "pattern",
+        "guidance"
+      ],
+      "fields": [
+        {
+          "path": [
+            "knowledge_id"
+          ],
+          "label": "knowledge_id"
+        }
+      ]
+    },
+    {
+      "id": "entity-identity",
+      "label": "Identidad",
+      "appliesTo": [
+        "entity"
+      ],
+      "fields": [
+        {
+          "path": [
+            "entity_kind"
+          ],
+          "label": "entity_kind"
+        },
+        {
+          "path": [
+            "entity_value"
+          ],
+          "label": "entity_value"
+        },
+        {
+          "path": [
+            "strength"
+          ],
+          "label": "strength"
+        }
+      ]
+    },
+    {
+      "id": "warning-state",
+      "label": "Estado de la advertencia",
+      "appliesTo": [
+        "warning"
+      ],
+      "fields": [
+        {
+          "path": [
+            "warning_id"
+          ],
+          "label": "warning_id"
+        },
+        {
+          "path": [
+            "status"
+          ],
+          "label": "status"
+        },
+        {
+          "path": [
+            "captured_at"
+          ],
+          "label": "captured_at"
+        }
+      ]
+    },
+    {
+      "id": "regulator-identity",
+      "label": "Regulador",
+      "appliesTo": [
+        "regulator"
+      ],
+      "fields": [
+        {
+          "path": [
+            "code"
+          ],
+          "label": "code"
+        }
+      ]
+    },
+    {
+      "id": "source-provenance",
+      "label": "Procedencia",
+      "appliesTo": [
+        "source"
+      ],
+      "fields": [
+        {
+          "path": [
+            "url"
+          ],
+          "label": "url"
+        },
+        {
+          "path": [
+            "source_kind"
+          ],
+          "label": "source_kind"
+        }
+      ]
+    }
+  ],
+  "stats": {
+    "notes": 12,
+    "edges": 9,
+    "declaredEdges": 9,
+    "derivedEdges": 0,
+    "unresolvedEdges": 0
+  },
+  "nodes": [
+    {
+      "slug": "entities/example-broker",
+      "title": "example-broker.test",
+      "type": "entity",
+      "tags": [
+        "synthetic",
+        "domain",
+        "type/entity"
+      ],
+      "description": "Dominio reservado usado para demostrar una advertencia vigente.",
+      "path": "entities/example-broker.md",
+      "properties": {
+        "knowledge_id": "urn:argos:entity:example-broker",
+        "entity_kind": "domain",
+        "entity_value": "example-broker.test",
+        "strength": "strong"
+      }
+    },
+    {
+      "slug": "entities/nexolabs-capital",
+      "title": "Nexolabs Capital",
+      "type": "entity",
+      "tags": [
+        "synthetic",
+        "company",
+        "type/entity"
+      ],
+      "description": "Nombre sintético de una sociedad usado para demostrar coincidencias regulatorias.",
+      "path": "entities/nexolabs-capital.md",
+      "properties": {
+        "knowledge_id": "urn:argos:entity:nexolabs-capital",
+        "entity_kind": "company",
+        "entity_value": "Nexolabs Capital",
+        "strength": "weak"
+      }
+    },
+    {
+      "slug": "entities/retired-platform",
+      "title": "retired-platform.test",
+      "type": "entity",
+      "tags": [
+        "synthetic",
+        "domain",
+        "type/entity"
+      ],
+      "description": "Dominio reservado asociado a una advertencia sintética retirada.",
+      "path": "entities/retired-platform.md",
+      "properties": {
+        "knowledge_id": "urn:argos:entity:retired-platform",
+        "entity_kind": "domain",
+        "entity_value": "retired-platform.test",
+        "strength": "strong"
+      }
+    },
+    {
+      "slug": "regulators/cnmv",
+      "title": "CNMV",
+      "type": "regulator",
+      "tags": [
+        "synthetic",
+        "regulator",
+        "type/regulator"
+      ],
+      "description": "Regulador usado como referencia nominal en el catálogo sintético.",
+      "path": "regulators/cnmv.md",
+      "properties": {
+        "knowledge_id": "urn:argos:regulator:cnmv",
+        "code": "CNMV"
+      }
+    },
+    {
+      "slug": "regulators/fca",
+      "title": "FCA",
+      "type": "regulator",
+      "tags": [
+        "synthetic",
+        "regulator",
+        "type/regulator"
+      ],
+      "description": "Regulador usado como referencia nominal en el catálogo sintético.",
+      "path": "regulators/fca.md",
+      "properties": {
+        "knowledge_id": "urn:argos:regulator:fca",
+        "code": "FCA"
+      }
+    },
+    {
+      "slug": "regulators/iosco",
+      "title": "IOSCO I-SCAN",
+      "type": "regulator",
+      "tags": [
+        "synthetic",
+        "regulator",
+        "type/regulator"
+      ],
+      "description": "Agregador usado como referencia nominal en el catálogo sintético.",
+      "path": "regulators/iosco.md",
+      "properties": {
+        "knowledge_id": "urn:argos:regulator:iosco-iscan",
+        "code": "IOSCO I-SCAN"
+      }
+    },
+    {
+      "slug": "sources/cnmv-nexolabs-capital",
+      "title": "Fuente sintética CNMV · Nexolabs Capital",
+      "type": "source",
+      "tags": [
+        "synthetic",
+        "source",
+        "type/source"
+      ],
+      "description": "Página reservada que representa la procedencia de una advertencia sintética.",
+      "path": "sources/cnmv-nexolabs-capital.md",
+      "properties": {
+        "knowledge_id": "urn:argos:source:cnmv-nexolabs-capital",
+        "url": "https://warnings.cnmv.example/demo/nexolabs-capital",
+        "source_kind": "official-warning"
+      }
+    },
+    {
+      "slug": "sources/fca-example-broker",
+      "title": "Fuente sintética FCA · example-broker.test",
+      "type": "source",
+      "tags": [
+        "synthetic",
+        "source",
+        "type/source"
+      ],
+      "description": "Página reservada que representa la procedencia de una advertencia sintética.",
+      "path": "sources/fca-example-broker.md",
+      "properties": {
+        "knowledge_id": "urn:argos:source:fca-example-broker",
+        "url": "https://warnings.fca.example/demo/example-broker",
+        "source_kind": "official-warning"
+      }
+    },
+    {
+      "slug": "sources/iosco-retired-platform",
+      "title": "Fuente sintética I-SCAN · retired-platform.test",
+      "type": "source",
+      "tags": [
+        "synthetic",
+        "source",
+        "type/source"
+      ],
+      "description": "Página reservada que representa la procedencia de una advertencia retirada.",
+      "path": "sources/iosco-retired-platform.md",
+      "properties": {
+        "knowledge_id": "urn:argos:source:iosco-retired-platform",
+        "url": "https://warnings.iosco.example/demo/retired-platform",
+        "source_kind": "official-warning"
+      }
+    },
+    {
+      "slug": "warnings/cnmv-nexolabs-capital",
+      "title": "Advertencia sintética sobre Nexolabs Capital",
+      "type": "warning",
+      "tags": [
+        "synthetic",
+        "active-warning",
+        "type/warning"
+      ],
+      "description": "Advertencia vigente de demostración asociada a un nombre de sociedad sintético.",
+      "path": "warnings/cnmv-nexolabs-capital.md",
+      "properties": {
+        "knowledge_id": "urn:argos:warning:cnmv-nexolabs-capital",
+        "warning_id": "demo-cnmv-nexolabs-capital",
+        "status": "active",
+        "captured_at": "2026-09-01T00:00:00Z"
+      }
+    },
+    {
+      "slug": "warnings/fca-example-broker",
+      "title": "Advertencia sintética sobre example-broker.test",
+      "type": "warning",
+      "tags": [
+        "synthetic",
+        "active-warning",
+        "type/warning"
+      ],
+      "description": "Advertencia vigente de demostración asociada a un dominio reservado.",
+      "path": "warnings/fca-example-broker.md",
+      "properties": {
+        "knowledge_id": "urn:argos:warning:fca-example-broker",
+        "warning_id": "demo-fca-example-broker",
+        "status": "active",
+        "captured_at": "2026-09-01T00:00:00Z"
+      }
+    },
+    {
+      "slug": "warnings/iosco-retired-platform",
+      "title": "Advertencia sintética retirada sobre retired-platform.test",
+      "type": "warning",
+      "tags": [
+        "synthetic",
+        "withdrawn-warning",
+        "type/warning"
+      ],
+      "description": "Advertencia retirada de demostración asociada a un dominio reservado.",
+      "path": "warnings/iosco-retired-platform.md",
+      "properties": {
+        "knowledge_id": "urn:argos:warning:iosco-retired-platform",
+        "warning_id": "demo-iosco-retired-platform",
+        "status": "withdrawn",
+        "captured_at": "2026-09-01T00:00:00Z"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "warnings/cnmv-nexolabs-capital",
+      "target": "entities/nexolabs-capital",
+      "label": "Warns about"
+    },
+    {
+      "source": "warnings/cnmv-nexolabs-capital",
+      "target": "regulators/cnmv",
+      "label": "Issued by"
+    },
+    {
+      "source": "warnings/cnmv-nexolabs-capital",
+      "target": "sources/cnmv-nexolabs-capital",
+      "label": "Cites"
+    },
+    {
+      "source": "warnings/fca-example-broker",
+      "target": "entities/example-broker",
+      "label": "Warns about"
+    },
+    {
+      "source": "warnings/fca-example-broker",
+      "target": "regulators/fca",
+      "label": "Issued by"
+    },
+    {
+      "source": "warnings/fca-example-broker",
+      "target": "sources/fca-example-broker",
+      "label": "Cites"
+    },
+    {
+      "source": "warnings/iosco-retired-platform",
+      "target": "entities/retired-platform",
+      "label": "Warns about"
+    },
+    {
+      "source": "warnings/iosco-retired-platform",
+      "target": "regulators/iosco",
+      "label": "Issued by"
+    },
+    {
+      "source": "warnings/iosco-retired-platform",
+      "target": "sources/iosco-retired-platform",
+      "label": "Cites"
+    }
+  ],
+  "unresolved": []
+}
